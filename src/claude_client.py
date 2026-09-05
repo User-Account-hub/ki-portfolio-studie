@@ -21,7 +21,10 @@ def get_trading_decision(
     deprecated for this model"), so this call relies on the model's default
     sampling behaviour instead.
     """
-    client = anthropic.Anthropic(api_key=api_key)
+    # Strips accidental whitespace/newlines from the secret (e.g. a trailing
+    # "\n" from how the value was pasted into a CI secret store) - the HTTP
+    # client rejects header values containing raw newlines outright.
+    client = anthropic.Anthropic(api_key=api_key.strip())
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
