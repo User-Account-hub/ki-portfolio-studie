@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+.env
+
+# Hinweis: db/*.db wird bewusst NICHT ignoriert - die SQLite-Datei ist der
+# persistente Portfolio-Zustand zwischen den wöchentlichen GitHub-Actions-
+# Läufen und wird vom Workflow zurück ins Repo committet (siehe README).
+
+# generierte Reports werden ebenfalls versioniert (siehe README) -
+# nur das Verzeichnis selbst wird hier freigehalten falls leer.
+!reports/.gitkeep
+
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+.idea/
+.vscode/

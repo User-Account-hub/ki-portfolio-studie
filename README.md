@@ -1,0 +1,193 @@
+# KI-gestützte Portfolio-Fallstudie mit Claude
+
+Eine Fallstudie, in der Claude wöchentlich Handelsentscheidungen für ein
+**Paper-Trading-Portfolio** vorschlägt. Alle Entscheidungen durchlaufen
+serverseitige Risk-Guardrails, bevor sie über die **Alpaca Paper Trading
+API** ausgeführt werden. Es fliesst zu keinem Zeitpunkt echtes Geld.
+
+> ⚠️ **Kein Anlageberatungs-Tool.** Dieses Projekt dient ausschliesslich
+> Demonstrations-/Forschungszwecken. Es handelt sich um Paper Trading
+> (Simulation), keine Anlageempfehlung.
+
+## Architektur
+
+```
+config/            Watchlist (Anlage-Universum) & Risk-Guardrail-Limiten
+db/                 SQLite-Schema + Init-Skript
+src/
+  config.py         Lädt .env + YAML-Configs
+  data_fetch.py      Marktdaten via yfinance
+  prompt_builder.py  Baut System-/User-Prompt für Claude
+  claude_client.py   Ruft die Anthropic Messages API auf
+  order_schema.py    Pydantic-Modelle + JSON-Parsing der Claude-Antwort
+  risk_guardrails.py Pre-Trade-Risikoprüfung (reines, getestetes Modul)
+  broker_alpaca.py   Ausführung via Alpaca Paper Trading API
+  execution.py       Orchestriert Risk-Check -> Ausführung -> DB-Update
+  metrics.py         Rekonstruiert NAV-Verlauf & berechnet Kennzahlen
+  reporting.py       Erzeugt Markdown-Report pro Lauf
+  pipeline.py         Einstiegspunkt für einen kompletten Lauf
+tests/               Unit-Tests (Fokus: risk_guardrails)
+.github/workflows/   Wöchentlicher Cron-Lauf via GitHub Actions
+reports/             Generierte Markdown-Reports (werden versioniert)
+```
+
+**Ablauf eines Laufs** (`src/pipeline.py`):
+
+1. Marktdaten für Watchlist + offene Positionen laden (yfinance).
+2. **Pflicht-Sweep:** offene Short-Positionen auf Stop-Loss prüfen und bei
+   Bedarf zwangsweise schliessen - unabhängig von Claudes Vorschlag und
+   unabhängig vom Tagesverlust-Stop (siehe unten).
+3. Prompt bauen, Claude aufrufen, JSON-Antwort parsen & validieren
+   (Pydantic).
+4. Jede vorgeschlagene Order durch `risk_guardrails.evaluate_order` prüfen;
+   nur freigegebene Orders werden ausgeführt.
+5. Aktien/ETFs laufen über echte Alpaca-Paper-Orders; strukturierte
+   Produkte werden simuliert gebucht (siehe Einschränkung unten).
+6. NAV-Verlauf rekonstruieren, Kennzahlen berechnen, Report schreiben.
+
+## Wichtige Einschränkungen & Design-Entscheidungen
+
+- **Alpaca deckt keine strukturierten Produkte ab.** Hebelzertifikate,
+  Mini-Futures und Optionsscheine sind Schweizer/deutsche Retail-Derivate;
+  Alpaca handelt nur US-Aktien/ETFs/Optionen/Crypto. Diese Instrumente
+  werden daher in der SQLite-DB als eigener `instrument_type` geführt und
+  **simuliert** ausgeführt (Preis/Notional-Buchung ohne echte Order,
+  `trades.source = 'manual_simulation'`). Der 20%-NAV-Cap wird trotzdem
+  hart durchgesetzt.
+- **"Kein Margin-Trading"** wird als "keine gehebelte Kaufkraft über 1x
+  Cash hinaus" interpretiert (`risk_guardrails.check_no_margin`). Das für
+  Shorting technisch nötige Alpaca-Margin-Konto ist davon ausgenommen, da
+  Shorting explizit erlaubt ist.
+- **Cashflow-Modell für Shorts:** Eröffnen eines Short erhöht das
+  gebuchte Cash (Verkaufserlös), Cover reduziert es wieder - siehe
+  Kommentar in `src/execution.py`. Damit bleibt der NAV beim Öffnen einer
+  Position unverändert; P&L entsteht ausschliesslich durch Kursbewegung.
+- **NAV-Verlauf ohne eigene Tabelle:** Die DB hat bewusst nur die vier
+  angefragten Tabellen. `metrics.py` rekonstruiert den Wochenverlauf durch
+  Replay der `trades`-Tabelle plus historischen Kursen (yfinance) statt
+  über eine separate NAV-Historie-Tabelle. Das ist eine Näherung
+  (Intra-Wochen-Bewegungen bereits geschlossener Positionen fehlen), für
+  eine wöchentliche Fallstudie aber ausreichend.
+- **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
+  `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
+  darauf, dass das Modell sie einhält - jede Order wird unabhängig
+  geprüft.
+
+## Setup
+
+### Voraussetzungen
+
+- Python 3.11+
+- Ein [Anthropic API Key](https://console.anthropic.com/)
+- Ein [Alpaca Paper Trading Account](https://app.alpaca.markets/paper/dashboard/overview)
+  (kostenlos, keine echten Kontodaten nötig)
+
+### 1. Repository & virtuelle Umgebung
+
+```bash
+git init   # falls noch nicht geschehen
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+### 2. Umgebungsvariablen konfigurieren
+
+```bash
+cp .env.example .env
+```
+
+Trage in `.env` deinen `ANTHROPIC_API_KEY` sowie `ALPACA_API_KEY` /
+`ALPACA_SECRET_KEY` (aus dem Alpaca-Paper-Dashboard) ein. Die übrigen
+Werte haben sinnvolle Defaults.
+
+### 3. Datenbank initialisieren
+
+```bash
+python db/init_db.py
+```
+
+Legt `db/portfolio.db` an und seedet ein Portfolio mit dem in `.env`
+konfigurierten Startkapital (`INITIAL_CASH_BALANCE`, Default 100'000).
+
+### 4. Anlage-Universum & Risk-Limiten anpassen
+
+- `config/watchlist.yaml`: Symbole, die Claude vorschlagen darf. Enthält
+  Beispiel-Platzhalter für strukturierte Produkte (`MINI-NVDA-LONG-1`,
+  `WARRANT-TSLA-PUT-1`) - vor produktivem Einsatz durch echte
+  Produktkennungen deines Emittenten ersetzen.
+- `config/risk_config.yaml`: alle Guardrail-Limiten (Positionsgrösse,
+  Trade-Notional, Tagesverlust-Stop, max. Trades/Tag, strukturierte-
+  Produkte-Cap, Short-Stop-Loss, Margin-Verbot).
+
+### 5. Tests ausführen
+
+```bash
+pytest
+```
+
+Die Tests decken `src/risk_guardrails.py` vollständig ab (Positionsgrössen-
+Limit, Trade-Notional-Limit, Margin-Verbot, Tagesverlust-Stop, max.
+Trades/Tag/Symbol, strukturierte-Produkte-Cap, Short-Stop-Loss-Sweep).
+
+### 6. Pipeline manuell ausführen
+
+```bash
+python -m src.pipeline
+```
+
+Ein Report landet in `reports/report_<timestamp>.md`.
+
+## GitHub Actions: wöchentlicher Lauf
+
+Der Workflow `.github/workflows/weekly_pipeline.yml` läuft jeden Montag um
+07:00 UTC (und ist manuell über "Run workflow" auslösbar).
+
+**Secrets** (Repo-Settings → Secrets and variables → Actions → *Secrets*):
+
+| Name | Beschreibung |
+|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic API Key |
+| `ALPACA_API_KEY` | Alpaca Paper API Key |
+| `ALPACA_SECRET_KEY` | Alpaca Paper Secret Key |
+
+**Variablen** (optional, unter *Variables* im selben Menü; sonst greifen
+die Defaults aus dem Workflow):
+
+`CLAUDE_MODEL`, `ALPACA_BASE_URL`, `DB_PATH`, `PORTFOLIO_NAME`,
+`INITIAL_CASH_BALANCE`, `PORTFOLIO_CURRENCY`, `BENCHMARK_SYMBOL`,
+`WATCHLIST_PATH`, `RISK_CONFIG_PATH`, `REPORTS_DIR`.
+
+Die SQLite-Datei (`db/*.db`) und die generierten Reports werden vom
+Workflow nach jedem Lauf zurück ins Repository committet, damit der
+Portfolio-Zustand zwischen den wöchentlichen Läufen erhalten bleibt. Das
+Repo braucht dafür `permissions: contents: write` (bereits im Workflow
+gesetzt).
+
+## Dokumentationspflicht Short-Stop-Loss
+
+Jede automatische Zwangsschliessung einer Short-Position (Kurs ≥ 20% über
+Einstand) wird an zwei Stellen dokumentiert:
+
+- `decisions`-Tabelle: eigener Eintrag mit `forced_action = 1` und
+  Freitext-Begründung.
+- `positions`-Tabelle: `closure_reason = 'short_stop_loss_forced'` und
+  `closure_notes` mit den Details (Symbol, Einstands-/Auslösekurs, Verlust
+  in %).
+
+Diese Einträge erscheinen zusätzlich prominent im generierten
+Wochenreport.
+
+## Nächste Schritte / bekannte Grenzen
+
+- Kursdaten für strukturierte Produkte werden über den Basiswert
+  approximiert (kein Feed für Emittentenkurse/Spreads/Aufgeld enthalten).
+- Kein Retry/Backoff für Anthropic- oder Alpaca-API-Fehler; ein
+  fehlgeschlagener Lauf beendet sich mit Exit-Code 1 und wird im
+  Actions-Log sichtbar.
+- Keine Benachrichtigung (E-Mail/Slack) bei Fehlern oder Stop-Loss-
+  Triggern - bei Bedarf leicht in `src/pipeline.py` ergänzbar.

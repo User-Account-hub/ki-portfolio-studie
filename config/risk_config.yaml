@@ -1,0 +1,43 @@
+# Risk-Guardrails - siehe src/risk_guardrails.py für die Durchsetzung.
+# Diese Werte sind KEINE Empfehlungen an Claude, sondern harte,
+# vom Code erzwungene Limits (defense in depth: der Prompt nennt
+# Claude dieselben Regeln, aber die Ausführung verlässt sich nicht
+# darauf, dass das Modell sie einhält).
+
+# Max. Anteil eines Einzeltitels (long oder short, nach Ausführung
+# des Trades) am gesamten Portfolio-NAV.
+max_position_size_pct_of_portfolio: 0.10
+
+# Max. Volumen (Notional) eines einzelnen Trades als Anteil des
+# aktuell verfügbaren Cash.
+max_trade_notional_pct_of_cash: 0.05
+
+# Verlustgrenze seit dem Start des aktuellen Pipeline-Laufs
+# ("Tagesverlust" im Sinne des Runs, da der Cron wöchentlich läuft).
+# Wird sie unterschritten, werden KEINE neuen Positionen mehr eröffnet
+# oder aufgestockt - Pflicht-Stop-Loss-Schließungen (siehe unten)
+# sind davon ausgenommen.
+daily_loss_stop_pct: -0.03
+
+# Max. Anzahl Trades pro Symbol und Kalendertag.
+max_trades_per_symbol_per_day: 1
+
+# Long- und Short-Positionen auf Aktien/ETFs des Universums erlaubt.
+allow_short: true
+
+# Strukturierte Produkte (Hebelzertifikate, Mini-Futures, Optionsscheine)
+# auf Titel des Universums erlaubt (werden simuliert ausgeführt, siehe README).
+allow_structured_products: true
+
+# Summe der Notionals aller offenen strukturierten Produkte darf diesen
+# Anteil des Portfolio-NAV nicht überschreiten.
+structured_products_max_notional_pct_of_nav: 0.20
+
+# Stop-Loss für Short-Positionen: Schwelle für die Kursbewegung GEGEN
+# die Position (Kurs steigt) relativ zum Einstandskurs. -0.20 bedeutet:
+# Zwangsschliessung, sobald der Kurs 20% über dem Einstandskurs liegt.
+short_stop_loss_pct: -0.20
+
+# Kein klassisches Margin-Trading: Käufe/Shorts dürfen das vorhandene
+# Cash nicht überschreiten (keine gehebelte Kaufkraft über 1x Cash hinaus).
+allow_margin: false

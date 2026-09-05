@@ -1,0 +1,75 @@
+name: Weekly Portfolio Pipeline
+
+on:
+  schedule:
+    # Jeden Montag 07:00 UTC
+    - cron: "0 7 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-portfolio-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Initialize database (idempotent)
+        env:
+          DB_PATH: ${{ vars.DB_PATH || './db/portfolio.db' }}
+          PORTFOLIO_NAME: ${{ vars.PORTFOLIO_NAME || 'ki-fallstudie-1' }}
+          INITIAL_CASH_BALANCE: ${{ vars.INITIAL_CASH_BALANCE || '100000' }}
+          PORTFOLIO_CURRENCY: ${{ vars.PORTFOLIO_CURRENCY || 'USD' }}
+          BENCHMARK_SYMBOL: ${{ vars.BENCHMARK_SYMBOL || 'SPY' }}
+        run: python db/init_db.py
+
+      - name: Run pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-5' }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ vars.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets' }}
+          DB_PATH: ${{ vars.DB_PATH || './db/portfolio.db' }}
+          PORTFOLIO_NAME: ${{ vars.PORTFOLIO_NAME || 'ki-fallstudie-1' }}
+          WATCHLIST_PATH: ${{ vars.WATCHLIST_PATH || './config/watchlist.yaml' }}
+          RISK_CONFIG_PATH: ${{ vars.RISK_CONFIG_PATH || './config/risk_config.yaml' }}
+          REPORTS_DIR: ${{ vars.REPORTS_DIR || './reports' }}
+        run: python -m src.pipeline
+
+      - name: Upload report as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-report-${{ github.run_id }}
+          path: reports/*.md
+          if-no-files-found: warn
+
+      - name: Commit updated DB and report
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add db/*.db reports/*.md
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: weekly pipeline run $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "Keine Änderungen zum Committen."
+          fi

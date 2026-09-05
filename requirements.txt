@@ -1,0 +1,9 @@
+anthropic>=0.40.0
+yfinance>=0.2.40
+alpaca-py>=0.33.0
+pandas>=2.2.0
+numpy>=1.26.0
+pydantic>=2.7.0
+PyYAML>=6.0.1
+python-dotenv>=1.0.1
+pytest>=8.2.0

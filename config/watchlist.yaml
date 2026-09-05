@@ -1,0 +1,33 @@
+# Anlage-Universum: nur Symbole aus dieser Liste dürfen von Claude
+# vorgeschlagen und von der Pipeline ausgeführt werden.
+# instrument_type steuert, ob real über Alpaca gehandelt wird
+# (equity/etf) oder simuliert (leverage_certificate/mini_future/warrant).
+# underlying_symbol ist bei strukturierten Produkten Pflicht.
+
+benchmark_symbol: SPY
+
+symbols:
+  - symbol: AAPL
+    instrument_type: equity
+  - symbol: MSFT
+    instrument_type: equity
+  - symbol: NVDA
+    instrument_type: equity
+  - symbol: AMZN
+    instrument_type: equity
+  - symbol: TSLA
+    instrument_type: equity
+  - symbol: SPY
+    instrument_type: etf
+  - symbol: QQQ
+    instrument_type: etf
+
+  # Beispiele für strukturierte Produkte auf Titel des Universums.
+  # Diese Symbole sind Platzhalter (z.B. Valor/ISIN-Kürzel eines Emittenten) -
+  # bitte vor Live-Nutzung durch echte Produktkennungen ersetzen.
+  - symbol: MINI-NVDA-LONG-1
+    instrument_type: mini_future
+    underlying_symbol: NVDA
+  - symbol: WARRANT-TSLA-PUT-1
+    instrument_type: warrant
+    underlying_symbol: TSLA
