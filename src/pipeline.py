@@ -22,7 +22,7 @@ import sys
 from src import broker_alpaca, data_fetch, db, execution, metrics, reporting
 from src.claude_client import get_trading_decision
 from src.config import AppConfig, RiskConfig, Watchlist
-from src.order_schema import OrderParsingError, parse_orders_from_json
+from src.order_schema import STRUCTURED_INSTRUMENT_TYPES, OrderParsingError, parse_orders_from_json
 from src.prompt_builder import SYSTEM_PROMPT, build_user_prompt
 from src.risk_guardrails import compute_nav
 
@@ -36,6 +36,9 @@ def run() -> None:
     watchlist = Watchlist.from_yaml(app_config.watchlist_path)
     watchlist_underlyings = {
         s.symbol: s.underlying_symbol for s in watchlist.symbols if s.underlying_symbol
+    }
+    structured_product_symbols = {
+        s.symbol for s in watchlist.symbols if s.instrument_type in STRUCTURED_INSTRUMENT_TYPES
     }
 
     broker_client = broker_alpaca.get_trading_client(app_config.alpaca_api_key, app_config.alpaca_secret_key)
@@ -51,7 +54,9 @@ def run() -> None:
             | set(watchlist_underlyings.values())
         )
         log.info("Lade Marktdaten für %d Symbole via yfinance...", len(price_lookup_symbols))
-        snapshots = data_fetch.fetch_market_snapshots(price_lookup_symbols)
+        snapshots = data_fetch.fetch_market_snapshots(
+            price_lookup_symbols, known_unresolvable_symbols=structured_product_symbols
+        )
         current_prices = {s: snap.last_price for s, snap in snapshots.items()}
 
         start_of_run_nav = compute_nav(
