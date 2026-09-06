@@ -1,29 +1,237 @@
-# Anlage-Universum: nur Symbole aus dieser Liste dürfen von Claude
-# vorgeschlagen und von der Pipeline ausgeführt werden.
-# instrument_type steuert, ob real über Alpaca gehandelt wird
+# Anlage-Universum: nur Symbole aus dieser Liste duerfen von Claude
+# vorgeschlagen und von der Pipeline ausgefuehrt werden.
+# instrument_type steuert, ob real ueber Alpaca gehandelt wird
 # (equity/etf) oder simuliert (leverage_certificate/mini_future/warrant).
 # underlying_symbol ist bei strukturierten Produkten Pflicht.
+#
+# Aktien-Universum entspricht Anhang A der Thesis (config/anhang_a_universum.csv,
+# 100 Titel / 14 Segmente). Segment-Gruppierung unten dient nur der
+# Nachvollziehbarkeit gegenueber der Thesis, hat keine funktionale Bedeutung.
 
 benchmark_symbol: SPY
 
 symbols:
-  - symbol: AAPL
-    instrument_type: equity
-  - symbol: MSFT
-    instrument_type: equity
+  # --- KI-Halbleiter & Compute ---
   - symbol: NVDA
-    instrument_type: equity
-  - symbol: AMZN
-    instrument_type: equity
+    instrument_type: equity  # Nvidia (Mega-Cap)
+  - symbol: AMD
+    instrument_type: equity  # Advanced Micro Devices (Large-Cap)
+  - symbol: AVGO
+    instrument_type: equity  # Broadcom (Mega-Cap)
+  - symbol: ARM
+    instrument_type: equity  # Arm Holdings (Large-Cap)
+  - symbol: MRVL
+    instrument_type: equity  # Marvell Technology (Large-Cap)
+  - symbol: SMCI
+    instrument_type: equity  # Super Micro Computer (Mid-Cap)
+  - symbol: CRDO
+    instrument_type: equity  # Credo Technology (Small/Mid-Cap)
+  - symbol: TSM
+    instrument_type: equity  # Taiwan Semiconductor (Mega-Cap)
+  - symbol: MU
+    instrument_type: equity  # Micron Technology (Large-Cap)
+  - symbol: ASML
+    instrument_type: equity  # ASML Holding (Mega-Cap)
+  # --- KI-Infrastruktur & DC-Power ---
+  - symbol: VST
+    instrument_type: equity  # Vistra Corp. (Large-Cap)
+  - symbol: CEG
+    instrument_type: equity  # Constellation Energy (Large-Cap)
+  - symbol: APLD
+    instrument_type: equity  # Applied Digital (Small-Cap)
+  - symbol: NRG
+    instrument_type: equity  # NRG Energy (Mid/Large-Cap)
+  - symbol: TLN
+    instrument_type: equity  # Talen Energy (Mid-Cap)
+  - symbol: GEV
+    instrument_type: equity  # GE Vernova (Large-Cap)
+  - symbol: VRT
+    instrument_type: equity  # Vertiv Holdings (Large-Cap)
+  - symbol: ETN
+    instrument_type: equity  # Eaton Corp. (Large-Cap)
+  - symbol: BE
+    instrument_type: equity  # Bloom Energy (Small/Mid-Cap)
+  # --- KI-Software & Anwendungen ---
+  - symbol: PLTR
+    instrument_type: equity  # Palantir (Large-Cap)
+  - symbol: AI
+    instrument_type: equity  # C3.ai (Small-Cap)
+  - symbol: SNOW
+    instrument_type: equity  # Snowflake (Large-Cap)
+  - symbol: PATH
+    instrument_type: equity  # UiPath (Mid-Cap)
+  - symbol: APP
+    instrument_type: equity  # AppLovin (Large-Cap)
+  - symbol: TEM
+    instrument_type: equity  # Tempus AI (Mid-Cap)
+  - symbol: SOUN
+    instrument_type: equity  # SoundHound AI (Small-Cap)
+  - symbol: BBAI
+    instrument_type: equity  # BigBear.ai (Small-Cap)
+  # --- Quantum Computing ---
+  - symbol: IONQ
+    instrument_type: equity  # IonQ (Small-Cap)
+  - symbol: RGTI
+    instrument_type: equity  # Rigetti Computing (Micro/Small-Cap)
+  - symbol: QBTS
+    instrument_type: equity  # D-Wave Quantum (Small-Cap)
+  - symbol: QUBT
+    instrument_type: equity  # Quantum Computing Inc. (Micro-Cap)
+  - symbol: ARQQ
+    instrument_type: equity  # Arqit Quantum (Micro-Cap)
+  - symbol: LAES
+    instrument_type: equity  # SEALSQ Corp. (Micro-Cap)
+  # --- Cybersecurity & Post-Quantum ---
+  - symbol: CRWD
+    instrument_type: equity  # CrowdStrike (Large-Cap)
+  - symbol: PANW
+    instrument_type: equity  # Palo Alto Networks (Large-Cap)
+  - symbol: ZS
+    instrument_type: equity  # Zscaler (Large-Cap)
+  - symbol: NET
+    instrument_type: equity  # Cloudflare (Large-Cap)
+  - symbol: S
+    instrument_type: equity  # SentinelOne (Mid-Cap)
+  - symbol: FTNT
+    instrument_type: equity  # Fortinet (Large-Cap)
+  - symbol: OKTA
+    instrument_type: equity  # Okta (Mid-Cap)
+  # --- Krypto-Mining ---
+  - symbol: MARA
+    instrument_type: equity  # MARA Holdings (Mid-Cap)
+  - symbol: RIOT
+    instrument_type: equity  # Riot Platforms (Mid-Cap)
+  - symbol: CLSK
+    instrument_type: equity  # CleanSpark (Small/Mid-Cap)
+  - symbol: CORZ
+    instrument_type: equity  # Core Scientific (Small/Mid-Cap)
+  - symbol: WULF
+    instrument_type: equity  # TeraWulf (Small-Cap)
+  - symbol: HUT
+    instrument_type: equity  # Hut 8 Corp. (Small/Mid-Cap)
+  - symbol: BTBT
+    instrument_type: equity  # Bit Digital (Micro-Cap)
+  - symbol: CIFR
+    instrument_type: equity  # Cipher Mining (Small-Cap)
+  # --- Digital Assets & Krypto-Oekosystem ---
+  - symbol: COIN
+    instrument_type: equity  # Coinbase (Large-Cap)
+  - symbol: MSTR
+    instrument_type: equity  # Strategy (MicroStrategy) (Large-Cap)
+  - symbol: HOOD
+    instrument_type: equity  # Robinhood (Large-Cap)
+  - symbol: CRCL
+    instrument_type: equity  # Circle Internet Group (Mid-Cap)
+  - symbol: GLXY
+    instrument_type: equity  # Galaxy Digital (Small-Cap)
+  - symbol: BULL
+    instrument_type: equity  # Webull (Small-Cap)
+  # --- Nuklear & Uran ---
+  - symbol: CCJ
+    instrument_type: equity  # Cameco Corp. (Large-Cap)
+  - symbol: OKLO
+    instrument_type: equity  # Oklo Inc. (Small-Cap)
+  - symbol: SMR
+    instrument_type: equity  # NuScale Power (Small/Mid-Cap)
+  - symbol: NNE
+    instrument_type: equity  # Nano Nuclear Energy (Micro-Cap)
+  - symbol: LEU
+    instrument_type: equity  # Centrus Energy (Small/Mid-Cap)
+  - symbol: UEC
+    instrument_type: equity  # Uranium Energy Corp. (Small-Cap)
+  - symbol: UUUU
+    instrument_type: equity  # Energy Fuels (Small-Cap)
+  - symbol: BWXT
+    instrument_type: equity  # BWX Technologies (Mid/Large-Cap)
+  - symbol: LTBR
+    instrument_type: equity  # Lightbridge Corp. (Micro-Cap)
+  # --- Energiespeicher Grid & Batterie ---
+  - symbol: FLNC
+    instrument_type: equity  # Fluence Energy (Mid-Cap)
+  - symbol: STEM
+    instrument_type: equity  # Stem Inc. (Micro-Cap)
+  - symbol: ENVX
+    instrument_type: equity  # Enovix (Small-Cap)
+  - symbol: QS
+    instrument_type: equity  # QuantumScape (Small/Mid-Cap)
+  - symbol: AMPX
+    instrument_type: equity  # Amprius Technologies (Small-Cap)
+  - symbol: EOSE
+    instrument_type: equity  # Eos Energy Enterprises (Small-Cap)
+  - symbol: SES
+    instrument_type: equity  # SES AI (Micro-Cap)
+  # --- Solar & Erneuerbare ---
+  - symbol: FSLR
+    instrument_type: equity  # First Solar (Large-Cap)
+  - symbol: ENPH
+    instrument_type: equity  # Enphase Energy (Mid-Cap)
+  - symbol: SEDG
+    instrument_type: equity  # SolarEdge (Small-Cap)
+  - symbol: RUN
+    instrument_type: equity  # Sunrun (Small-Cap)
+  - symbol: NXT
+    instrument_type: equity  # Nextracker (Mid-Cap)
+  - symbol: ARRY
+    instrument_type: equity  # Array Technologies (Small-Cap)
+  # --- Robotik & Automation ---
+  - symbol: ISRG
+    instrument_type: equity  # Intuitive Surgical (Large-Cap)
+  - symbol: SYM
+    instrument_type: equity  # Symbotic (Mid-Cap)
+  - symbol: SERV
+    instrument_type: equity  # Serve Robotics (Small-Cap)
+  - symbol: ABB
+    instrument_type: equity  # ABB Ltd (Large-Cap)
+    # HINWEIS: aktuell weder ueber yfinance noch ueber Alpaca aufloesbar/handelbar
+    # (Alpaca kennt nur ABBNY/OTC, dort tradable=False) - bewusst trotzdem im
+    # Universum belassen (Thesis-Vollstaendigkeit); Pipeline ueberspringt Orders
+    # dafuer automatisch mangels Kurs, kein Absturzrisiko.
+  - symbol: ROK
+    instrument_type: equity  # Rockwell Automation (Large-Cap)
+  - symbol: RR
+    instrument_type: equity  # Richtech Robotics (Micro-Cap)
+  # --- Raumfahrt & Defense-Tech ---
+  - symbol: RKLB
+    instrument_type: equity  # Rocket Lab (Mid-Cap)
+  - symbol: ASTS
+    instrument_type: equity  # AST SpaceMobile (Mid-Cap)
+  - symbol: LUNR
+    instrument_type: equity  # Intuitive Machines (Small-Cap)
+  - symbol: RDW
+    instrument_type: equity  # Redwire (Small-Cap)
+  - symbol: PL
+    instrument_type: equity  # Planet Labs (Small-Cap)
+  - symbol: KTOS
+    instrument_type: equity  # Kratos Defense (Mid-Cap)
+  - symbol: AVAV
+    instrument_type: equity  # AeroVironment (Mid-Cap)
+  # --- Future Mobility (eVTOL/EV) ---
   - symbol: TSLA
-    instrument_type: equity
-  - symbol: SPY
-    instrument_type: etf
-  - symbol: QQQ
-    instrument_type: etf
+    instrument_type: equity  # Tesla (Mega-Cap)
+  - symbol: JOBY
+    instrument_type: equity  # Joby Aviation (Mid-Cap)
+  - symbol: ACHR
+    instrument_type: equity  # Archer Aviation (Small-Cap)
+  - symbol: EVTL
+    instrument_type: equity  # Vertical Aerospace (Micro-Cap)
+  - symbol: RIVN
+    instrument_type: equity  # Rivian Automotive (Mid-Cap)
+  - symbol: LCID
+    instrument_type: equity  # Lucid Group (Small/Mid-Cap)
+  # --- Kritische Materialien & Seltene Erden ---
+  - symbol: MP
+    instrument_type: equity  # MP Materials (Mid-Cap)
+  - symbol: ALB
+    instrument_type: equity  # Albemarle (Large-Cap)
+  - symbol: LAC
+    instrument_type: equity  # Lithium Americas (Small-Cap)
+  - symbol: TMC
+    instrument_type: equity  # TMC the metals company (Small-Cap)
+  - symbol: USAR
+    instrument_type: equity  # USA Rare Earth (Small-Cap)
 
-  # Beispiele für strukturierte Produkte auf Titel des Universums.
-  # Diese Symbole sind Platzhalter (z.B. Valor/ISIN-Kürzel eines Emittenten) -
+  # Beispiele fuer strukturierte Produkte auf Titel des Universums.
+  # Diese Symbole sind Platzhalter (z.B. Valor/ISIN-Kuerzel eines Emittenten) -
   # bitte vor Live-Nutzung durch echte Produktkennungen ersetzen.
   - symbol: MINI-NVDA-LONG-1
     instrument_type: mini_future

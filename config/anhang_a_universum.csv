@@ -1,0 +1,101 @@
+Segment,Ticker,Unternehmen,CapTier,Profil
+KI-Halbleiter & Compute,NVDA,Nvidia,Mega-Cap,KI-GPU-Marktfuehrer
+KI-Halbleiter & Compute,AMD,Advanced Micro Devices,Large-Cap,KI-Chips/CPU
+KI-Halbleiter & Compute,AVGO,Broadcom,Mega-Cap,KI-Netzwerk/Custom-Silicon
+KI-Halbleiter & Compute,ARM,Arm Holdings,Large-Cap,Chipdesign-IP
+KI-Halbleiter & Compute,MRVL,Marvell Technology,Large-Cap,Data-Center-Silicon
+KI-Halbleiter & Compute,SMCI,Super Micro Computer,Mid-Cap,KI-Server sehr volatil
+KI-Halbleiter & Compute,CRDO,Credo Technology,Small/Mid-Cap,Data-Center-Connectivity
+KI-Halbleiter & Compute,TSM,Taiwan Semiconductor,Mega-Cap,Foundry-Marktfuehrer
+KI-Halbleiter & Compute,MU,Micron Technology,Large-Cap,Speicher / HBM
+KI-Halbleiter & Compute,ASML,ASML Holding,Mega-Cap,Lithografie-Ausruestung
+KI-Infrastruktur & DC-Power,VST,Vistra Corp.,Large-Cap,Strom-IPP AI-Power
+KI-Infrastruktur & DC-Power,CEG,Constellation Energy,Large-Cap,Strom Nuklear-Exposure
+KI-Infrastruktur & DC-Power,APLD,Applied Digital,Small-Cap,Data-Center/HPC spekulativ
+KI-Infrastruktur & DC-Power,NRG,NRG Energy,Mid/Large-Cap,Versorger Power
+KI-Infrastruktur & DC-Power,TLN,Talen Energy,Mid-Cap,Strom Data-Center-PPA
+KI-Infrastruktur & DC-Power,GEV,GE Vernova,Large-Cap,Energie-Ausruestung/Grid
+KI-Infrastruktur & DC-Power,VRT,Vertiv Holdings,Large-Cap,Data-Center-Kuehlung
+KI-Infrastruktur & DC-Power,ETN,Eaton Corp.,Large-Cap,Elektrotechnik/Grid
+KI-Infrastruktur & DC-Power,BE,Bloom Energy,Small/Mid-Cap,Brennstoffzellen Data-Center
+KI-Software & Anwendungen,PLTR,Palantir,Large-Cap,KI-Datenanalyse
+KI-Software & Anwendungen,AI,C3.ai,Small-Cap,Enterprise-KI
+KI-Software & Anwendungen,SNOW,Snowflake,Large-Cap,Daten-Cloud
+KI-Software & Anwendungen,PATH,UiPath,Mid-Cap,Automatisierung/KI
+KI-Software & Anwendungen,APP,AppLovin,Large-Cap,KI-Ad-Tech
+KI-Software & Anwendungen,TEM,Tempus AI,Mid-Cap,KI-Diagnostik
+KI-Software & Anwendungen,SOUN,SoundHound AI,Small-Cap,Sprach-KI
+KI-Software & Anwendungen,BBAI,BigBear.ai,Small-Cap,KI-Analytik
+Quantum Computing,IONQ,IonQ,Small-Cap,Trapped-Ion
+Quantum Computing,RGTI,Rigetti Computing,Micro/Small-Cap,Supraleitende Qubits
+Quantum Computing,QBTS,D-Wave Quantum,Small-Cap,Quantum Annealing
+Quantum Computing,QUBT,Quantum Computing Inc.,Micro-Cap,Photonik/Software
+Quantum Computing,ARQQ,Arqit Quantum,Micro-Cap,Quantenverschluesselung
+Quantum Computing,LAES,SEALSQ Corp.,Micro-Cap,Quantenresistente Sicherheit
+Cybersecurity & Post-Quantum,CRWD,CrowdStrike,Large-Cap,Endpoint-Security
+Cybersecurity & Post-Quantum,PANW,Palo Alto Networks,Large-Cap,Plattform-Security
+Cybersecurity & Post-Quantum,ZS,Zscaler,Large-Cap,Zero-Trust/Cloud
+Cybersecurity & Post-Quantum,NET,Cloudflare,Large-Cap,Edge/Security
+Cybersecurity & Post-Quantum,S,SentinelOne,Mid-Cap,KI-Endpoint
+Cybersecurity & Post-Quantum,FTNT,Fortinet,Large-Cap,Netzwerk-Security
+Cybersecurity & Post-Quantum,OKTA,Okta,Mid-Cap,Identity-Management
+Krypto-Mining,MARA,MARA Holdings,Mid-Cap,Bitcoin-Mining
+Krypto-Mining,RIOT,Riot Platforms,Mid-Cap,Bitcoin-Mining
+Krypto-Mining,CLSK,CleanSpark,Small/Mid-Cap,Bitcoin-Mining
+Krypto-Mining,CORZ,Core Scientific,Small/Mid-Cap,Mining/HPC-Hosting
+Krypto-Mining,WULF,TeraWulf,Small-Cap,Bitcoin-Mining
+Krypto-Mining,HUT,Hut 8 Corp.,Small/Mid-Cap,Mining/Energie-Infrastruktur
+Krypto-Mining,BTBT,Bit Digital,Micro-Cap,Mining/HPC-Diversifikation
+Krypto-Mining,CIFR,Cipher Mining,Small-Cap,Bitcoin-Mining
+Digital Assets & Krypto-Oekosystem,COIN,Coinbase,Large-Cap,Krypto-Boerse
+Digital Assets & Krypto-Oekosystem,MSTR,Strategy (MicroStrategy),Large-Cap,Bitcoin-Treasury
+Digital Assets & Krypto-Oekosystem,HOOD,Robinhood,Large-Cap,Broker/Krypto
+Digital Assets & Krypto-Oekosystem,CRCL,Circle Internet Group,Mid-Cap,Stablecoin (USDC)
+Digital Assets & Krypto-Oekosystem,GLXY,Galaxy Digital,Small-Cap,Krypto-Finanzdienstleister
+Digital Assets & Krypto-Oekosystem,BULL,Webull,Small-Cap,Broker
+Nuklear & Uran,CCJ,Cameco Corp.,Large-Cap,Uranabbau
+Nuklear & Uran,OKLO,Oklo Inc.,Small-Cap,SMR-Entwicklung spekulativ
+Nuklear & Uran,SMR,NuScale Power,Small/Mid-Cap,SMR-Entwicklung
+Nuklear & Uran,NNE,Nano Nuclear Energy,Micro-Cap,Mikroreaktoren
+Nuklear & Uran,LEU,Centrus Energy,Small/Mid-Cap,Urananreicherung
+Nuklear & Uran,UEC,Uranium Energy Corp.,Small-Cap,Uranabbau
+Nuklear & Uran,UUUU,Energy Fuels,Small-Cap,Uran/Seltene Erden
+Nuklear & Uran,BWXT,BWX Technologies,Mid/Large-Cap,Nuklearkomponenten etabliert
+Nuklear & Uran,LTBR,Lightbridge Corp.,Micro-Cap,Nuklearbrennstoff-Forschung
+Energiespeicher Grid & Batterie,FLNC,Fluence Energy,Mid-Cap,Grid-Speichersysteme
+Energiespeicher Grid & Batterie,STEM,Stem Inc.,Micro-Cap,KI-Energiespeicher-Software
+Energiespeicher Grid & Batterie,ENVX,Enovix,Small-Cap,Silizium-Batterien
+Energiespeicher Grid & Batterie,QS,QuantumScape,Small/Mid-Cap,Feststoffbatterien
+Energiespeicher Grid & Batterie,AMPX,Amprius Technologies,Small-Cap,Hochleistungsbatterien
+Energiespeicher Grid & Batterie,EOSE,Eos Energy Enterprises,Small-Cap,Zink-Speicher
+Energiespeicher Grid & Batterie,SES,SES AI,Micro-Cap,Lithium-Metall-Batterien
+Solar & Erneuerbare,FSLR,First Solar,Large-Cap,Solarmodule (Thin-Film)
+Solar & Erneuerbare,ENPH,Enphase Energy,Mid-Cap,Mikro-Wechselrichter
+Solar & Erneuerbare,SEDG,SolarEdge,Small-Cap,Wechselrichter/Optimierer
+Solar & Erneuerbare,RUN,Sunrun,Small-Cap,Solar-Residential
+Solar & Erneuerbare,NXT,Nextracker,Mid-Cap,Solar-Tracker
+Solar & Erneuerbare,ARRY,Array Technologies,Small-Cap,Solar-Tracker
+Robotik & Automation,ISRG,Intuitive Surgical,Large-Cap,Chirurgie-Robotik
+Robotik & Automation,SYM,Symbotic,Mid-Cap,Lager-Robotik
+Robotik & Automation,SERV,Serve Robotics,Small-Cap,Liefer-Robotik
+Robotik & Automation,ABB,ABB Ltd,Large-Cap,Industrie-Automation
+Robotik & Automation,ROK,Rockwell Automation,Large-Cap,Industrie-Automation
+Robotik & Automation,RR,Richtech Robotics,Micro-Cap,Service-Robotik
+Raumfahrt & Defense-Tech,RKLB,Rocket Lab,Mid-Cap,Traegerraketen/Space
+Raumfahrt & Defense-Tech,ASTS,AST SpaceMobile,Mid-Cap,Satelliten-Mobilfunk
+Raumfahrt & Defense-Tech,LUNR,Intuitive Machines,Small-Cap,Mondlandetechnik
+Raumfahrt & Defense-Tech,RDW,Redwire,Small-Cap,Raumfahrt-Infrastruktur
+Raumfahrt & Defense-Tech,PL,Planet Labs,Small-Cap,Erdbeobachtung
+Raumfahrt & Defense-Tech,KTOS,Kratos Defense,Mid-Cap,Drohnen/Defense
+Raumfahrt & Defense-Tech,AVAV,AeroVironment,Mid-Cap,Drohnen/Defense
+Future Mobility (eVTOL/EV),TSLA,Tesla,Mega-Cap,E-Mobilitaet/KI
+Future Mobility (eVTOL/EV),JOBY,Joby Aviation,Mid-Cap,eVTOL
+Future Mobility (eVTOL/EV),ACHR,Archer Aviation,Small-Cap,eVTOL
+Future Mobility (eVTOL/EV),EVTL,Vertical Aerospace,Micro-Cap,eVTOL
+Future Mobility (eVTOL/EV),RIVN,Rivian Automotive,Mid-Cap,Elektrofahrzeuge
+Future Mobility (eVTOL/EV),LCID,Lucid Group,Small/Mid-Cap,Elektrofahrzeuge
+Kritische Materialien & Seltene Erden,MP,MP Materials,Mid-Cap,Seltene Erden (USA)
+Kritische Materialien & Seltene Erden,ALB,Albemarle,Large-Cap,Lithium
+Kritische Materialien & Seltene Erden,LAC,Lithium Americas,Small-Cap,Lithium
+Kritische Materialien & Seltene Erden,TMC,TMC the metals company,Small-Cap,Tiefsee-Metalle
+Kritische Materialien & Seltene Erden,USAR,USA Rare Earth,Small-Cap,Seltene Erden/Magnete
