@@ -11,6 +11,7 @@ produces P&L.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 
@@ -42,6 +43,8 @@ POSITION_SIDE = {
 }
 
 INCREASES_POSITION = {OrderSide.BUY, OrderSide.SHORT}
+
+log = logging.getLogger("pipeline")
 
 
 @dataclass
@@ -199,6 +202,22 @@ def execute_forced_stop_loss_actions(
             action.current_price,
             broker_client,
         )
+
+        if fill.filled_qty <= 0:
+            # Gleiche Absicherung wie in execute_proposed_orders: ein vom Broker
+            # nicht gefüllter Cover würde sonst am CHECK(quantity > 0) crashen.
+            # Die Position bleibt offen und wird beim nächsten Lauf erneut geprüft;
+            # die fehlgeschlagene Zwangsschliessung wird nur geloggt, nicht stillschweigend
+            # verworfen (Dokumentationspflicht bleibt über decision_id-Eintrag erhalten).
+            log.error(
+                "Pflicht-Stop-Loss-Cover für %s nicht ausgeführt (Broker meldete Menge %s, Status %s) - "
+                "Position bleibt offen, wird im nächsten Lauf erneut geprüft.",
+                action.symbol,
+                fill.filled_qty,
+                fill.status,
+            )
+            continue
+
         order = ProposedOrder(
             symbol=action.symbol,
             instrument_type=action.instrument_type,
@@ -287,6 +306,22 @@ def execute_proposed_orders(
             price,
             broker_client,
         )
+
+        if fill.filled_qty <= 0:
+            # Broker hat (noch) keine oder null Stück gemeldet - z.B. eine vom
+            # Broker abgelehnte/stornierte Order oder ein Notional-Betrag, der
+            # zum Antwortzeitpunkt noch nicht gefüllt war. `trades.quantity`
+            # hat ein CHECK(quantity > 0); ein Insert würde die Pipeline zum
+            # Absturz bringen. Stattdessen: Order überspringen und dokumentieren,
+            # keine Cash-/Positions-/Trade-Mutation für diese Order.
+            reason = (
+                f"Broker meldet gefüllte Menge {fill.filled_qty} (Status: {fill.status}) für "
+                f"{order.symbol} - Order wird übersprungen, kein Trade gebucht."
+            )
+            results.append(ExecutedOrderResult(order=order, approved=False, reasons=[reason]))
+            risk_check_log.append({"symbol": order.symbol, "approved": False, "reasons": [reason]})
+            continue
+
         # Neu einlesen der Portfolio-Zeile für aktuellen cash_balance vor jedem Trade.
         portfolio_row = db.get_portfolio(conn, portfolio_row["name"])
         results.append(ExecutedOrderResult(order=order, approved=True, reasons=[], fill_price=fill.filled_price))
