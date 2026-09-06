@@ -41,3 +41,38 @@ short_stop_loss_pct: -0.20
 # Kein klassisches Margin-Trading: Käufe/Shorts dürfen das vorhandene
 # Cash nicht überschreiten (keine gehebelte Kaufkraft über 1x Cash hinaus).
 allow_margin: false
+
+# --- Kap. 6.8 Thesis: zusätzliche Portfolio-Leitplanken ---
+# Alle Prozentwerte beziehen sich auf den NAV, ausser wo anders vermerkt.
+# Durchsetzung: src/risk_guardrails.py (check_segment_weight,
+# check_correlated_segment_exposure, check_micro_cap_exposure,
+# check_top3_concentration, check_min_cash_quota, check_circuit_breaker).
+
+# Max. Anteil eines einzelnen Segments (Anhang-A-Taxonomie, z.B.
+# "KI-Halbleiter & Compute") am NAV nach Ausführung des Trades.
+max_segment_weight_pct_of_nav: 0.30
+
+# Segmente, deren kombinierte Exposure zusätzlich durch
+# max_correlated_crypto_mining_pct_of_nav begrenzt wird (Krypto-Mining und
+# Digital-Asset-Titel korrelieren stark mit dem Bitcoin-/Krypto-Kurs).
+correlated_crypto_mining_segments:
+  - "Krypto-Mining"
+  - "Digital Assets & Krypto-Oekosystem"
+max_correlated_crypto_mining_pct_of_nav: 0.30
+
+# Max. Anteil von Micro-Cap-Titeln (CapTier enthält "Micro", deckt auch
+# Mischformen wie "Micro/Small-Cap" ab) am NAV.
+max_micro_cap_pct_of_nav: 0.15
+
+# Max. kombinierter Anteil der drei grössten Einzelpositionen (nach
+# Marktwert) am NAV.
+max_top3_concentration_pct_of_nav: 0.35
+
+# Mindest-Cash-Quote am NAV, die durch einen cash-verbrauchenden Trade
+# (buy/cover) nicht unterschritten werden darf.
+min_cash_pct_of_nav: 0.05
+
+# Circuit-Breaker: Drawdown seit dem bisherigen NAV-Höchststand, ab dem
+# keine neuen/aufstockenden Hebelpositionen (strukturierte Produkte) mehr
+# eröffnet werden dürfen. Negativer Wert, analog zu daily_loss_stop_pct.
+circuit_breaker_drawdown_pct: -0.25

@@ -17,10 +17,13 @@ Wichtige Rahmenbedingungen:
 (Hebelzertifikate, Mini-Futures, Optionsscheine) auf Titel des Universums.
 - Kein Margin-Trading: Order-Notionals dürfen das verfügbare Cash nicht überschreiten.
 - Die tatsächliche Durchsetzung aller Risikolimiten (Positionsgrössen, Tagesverlust-Stop, \
-strukturierte-Produkte-Obergrenze, Short-Stop-Loss, max. 1 Trade/Symbol/Tag) erfolgt \
-serverseitig nach deiner Antwort - Vorschläge ausserhalb der Limiten werden automatisch \
-abgelehnt und nicht ausgeführt. Halte dich trotzdem an die unten genannten Limiten, um \
-unnötige Ablehnungen zu vermeiden.
+strukturierte-Produkte-Obergrenze, Short-Stop-Loss, max. 1 Trade/Symbol/Tag, max. \
+Segmentgewichtung, korrelierte Krypto/Mining-Exposure, Micro-Cap-Sublimit, \
+Top-3-Konzentration, Mindest-Cash-Quote, Drawdown-Circuit-Breaker für Hebelpositionen) \
+erfolgt serverseitig nach deiner Antwort - Vorschläge ausserhalb der Limiten werden \
+automatisch abgelehnt und nicht ausgeführt. Halte dich trotzdem an die unten genannten \
+Limiten (inkl. "segment"/"cap_tier" je Titel im Universum), um unnötige Ablehnungen zu \
+vermeiden.
 - Antworte AUSSCHLIESSLICH mit einem einzigen validen JSON-Objekt, ohne Markdown-Fences, \
 ohne Fliesstext davor oder danach.
 
@@ -79,6 +82,8 @@ def build_user_prompt(
             "symbol": s.symbol,
             "instrument_type": s.instrument_type,
             "underlying_symbol": s.underlying_symbol,
+            "segment": s.segment,
+            "cap_tier": s.cap_tier,
         }
         for s in watchlist.symbols
     ]
@@ -101,6 +106,13 @@ def build_user_prompt(
         "max_trades_per_symbol_per_day": risk_config.max_trades_per_symbol_per_day,
         "structured_products_max_notional_pct_of_nav": risk_config.structured_products_max_notional_pct_of_nav,
         "short_stop_loss_pct": risk_config.short_stop_loss_pct,
+        "max_segment_weight_pct_of_nav": risk_config.max_segment_weight_pct_of_nav,
+        "correlated_crypto_mining_segments": risk_config.correlated_crypto_mining_segments,
+        "max_correlated_crypto_mining_pct_of_nav": risk_config.max_correlated_crypto_mining_pct_of_nav,
+        "max_micro_cap_pct_of_nav": risk_config.max_micro_cap_pct_of_nav,
+        "max_top3_concentration_pct_of_nav": risk_config.max_top3_concentration_pct_of_nav,
+        "min_cash_pct_of_nav": risk_config.min_cash_pct_of_nav,
+        "circuit_breaker_drawdown_pct": risk_config.circuit_breaker_drawdown_pct,
     }
 
     payload = {

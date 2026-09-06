@@ -20,6 +20,14 @@ class RiskConfig:
     structured_products_max_notional_pct_of_nav: float
     short_stop_loss_pct: float
     allow_margin: bool
+    # --- Kap. 6.8 Thesis: zusaetzliche Portfolio-Leitplanken ---
+    max_segment_weight_pct_of_nav: float
+    correlated_crypto_mining_segments: list[str]
+    max_correlated_crypto_mining_pct_of_nav: float
+    max_micro_cap_pct_of_nav: float
+    max_top3_concentration_pct_of_nav: float
+    min_cash_pct_of_nav: float
+    circuit_breaker_drawdown_pct: float
 
     @classmethod
     def from_yaml(cls, path: str) -> "RiskConfig":
@@ -32,6 +40,11 @@ class WatchlistSymbol:
     symbol: str
     instrument_type: str
     underlying_symbol: str | None = None
+    # Thesis-Anhang-A-Taxonomie (nur fuer reguläre Aktien gesetzt, nicht fuer
+    # strukturierte Produkte) - Grundlage fuer die Kap.-6.8-Guardrails
+    # (Segmentgewicht, korrelierte Krypto/Mining-Exposure, Micro-Cap-Sublimit).
+    segment: str | None = None
+    cap_tier: str | None = None
 
 
 @dataclass(frozen=True)

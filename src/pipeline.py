@@ -40,6 +40,7 @@ def run() -> None:
     structured_product_symbols = {
         s.symbol for s in watchlist.symbols if s.instrument_type in STRUCTURED_INSTRUMENT_TYPES
     }
+    symbol_metadata = {s.symbol: s for s in watchlist.symbols}
 
     broker_client = broker_alpaca.get_trading_client(app_config.alpaca_api_key, app_config.alpaca_secret_key)
 
@@ -65,6 +66,11 @@ def run() -> None:
             current_prices,
         )
         log.info("NAV zu Lauf-Beginn: %.2f", start_of_run_nav)
+        # Vereinfachter NAV-Höchststand für den Kap.-6.8-Circuit-Breaker: ohne
+        # dedizierte NAV-Historie (siehe metrics.py-Docstring) wird das
+        # Maximum aus Startkapital und aktuellem Lauf-Start-NAV verwendet,
+        # statt für jeden Lauf zusätzlich die volle Historie zu rekonstruieren.
+        peak_nav = max(app_config.initial_cash_balance, start_of_run_nav)
 
         log.info("Prüfe offene Short-Positionen auf Stop-Loss-Trigger...")
         forced_actions = execution.run_short_stop_loss_sweep(
@@ -99,6 +105,8 @@ def run() -> None:
                 current_prices=current_prices,
                 start_of_run_nav=start_of_run_nav,
                 broker_client=broker_client,
+                symbol_metadata=symbol_metadata,
+                peak_nav=peak_nav,
             )
         except OrderParsingError as exc:
             log.error("Konnte Claude-Antwort nicht parsen: %s", exc)

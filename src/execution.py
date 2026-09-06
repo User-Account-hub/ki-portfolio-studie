@@ -72,8 +72,10 @@ def build_context(
     trades_today_by_symbol: dict[str, int],
     current_prices: dict[str, float],
     start_of_run_nav: float | None,
+    symbol_metadata: dict | None = None,
+    peak_nav: float | None = None,
 ) -> PortfolioContext:
-    positions = db.open_positions_as_risk_objects(open_position_rows)
+    positions = db.open_positions_as_risk_objects(open_position_rows, symbol_metadata)
     nav = compute_nav(portfolio_row["cash_balance"], positions, current_prices)
     return PortfolioContext(
         nav=nav,
@@ -81,6 +83,7 @@ def build_context(
         positions=positions,
         trades_today_by_symbol=trades_today_by_symbol,
         start_of_run_nav=start_of_run_nav,
+        peak_nav=peak_nav,
     )
 
 
@@ -271,9 +274,12 @@ def execute_proposed_orders(
     current_prices: dict[str, float],
     start_of_run_nav: float,
     broker_client,
+    symbol_metadata: dict | None = None,
+    peak_nav: float | None = None,
 ) -> list[ExecutedOrderResult]:
     results: list[ExecutedOrderResult] = []
     risk_check_log = []
+    symbol_metadata = symbol_metadata or {}
 
     trades_today = db.count_trades_today_by_symbol(conn, portfolio_row["id"])
 
@@ -286,9 +292,17 @@ def execute_proposed_orders(
             continue
 
         open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
-        ctx = build_context(portfolio_row, open_position_rows, trades_today, current_prices, start_of_run_nav)
+        ctx = build_context(
+            portfolio_row, open_position_rows, trades_today, current_prices, start_of_run_nav,
+            symbol_metadata=symbol_metadata, peak_nav=peak_nav,
+        )
 
-        check = evaluate_order(order, ctx, price, current_prices, risk_config)
+        order_meta = symbol_metadata.get(order.symbol)
+        check = evaluate_order(
+            order, ctx, price, current_prices, risk_config,
+            order_segment=order_meta.segment if order_meta is not None else None,
+            order_cap_tier=order_meta.cap_tier if order_meta is not None else None,
+        )
         risk_check_log.append({"symbol": order.symbol, "approved": check.approved, "reasons": check.reasons})
 
         if not check.approved:

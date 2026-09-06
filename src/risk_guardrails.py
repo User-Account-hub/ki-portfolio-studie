@@ -20,6 +20,11 @@ class OpenPosition:
     side: str  # 'long' | 'short'
     quantity: float
     avg_entry_price: float
+    # Thesis-Anhang-A-Taxonomie, vom Caller aus der Watchlist angereichert
+    # (siehe db.open_positions_as_risk_objects) - None fuer strukturierte
+    # Produkte und alles ausserhalb des Anhang-A-Universums.
+    segment: str | None = None
+    cap_tier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +36,11 @@ class PortfolioContext:
     positions: list[OpenPosition] = field(default_factory=list)
     trades_today_by_symbol: dict[str, int] = field(default_factory=dict)
     start_of_run_nav: float | None = None  # NAV vor dem aktuellen Pipeline-Lauf
+    # Bisheriger NAV-Hoechststand, fuer check_circuit_breaker. Vereinfachung
+    # (siehe pipeline.py): max(initial_cash_balance, start_of_run_nav) statt
+    # einer vollen Historien-Rekonstruktion - konsistent mit der bereits in
+    # metrics.py dokumentierten Naeherungs-Philosophie dieses Projekts.
+    peak_nav: float | None = None
 
     def position_for(self, symbol: str) -> OpenPosition | None:
         for p in self.positions:
@@ -189,6 +199,172 @@ def check_structured_products_cap(
     return RiskCheckResult.ok()
 
 
+def _is_micro_cap(cap_tier: str | None) -> bool:
+    """Matches "Micro-Cap" and mixed tiers like "Micro/Small-Cap" from Anhang A."""
+    return bool(cap_tier) and "micro" in cap_tier.lower()
+
+
+def check_segment_weight(
+    order: ProposedOrder,
+    ctx: PortfolioContext,
+    price: float,
+    current_prices: dict[str, float],
+    order_segment: str | None,
+    max_pct_of_nav: float,
+) -> RiskCheckResult:
+    """Kap. 6.8: ein einzelnes Anhang-A-Segment darf nach Ausführung des
+    Trades nicht mehr als `max_pct_of_nav` des NAV ausmachen. Orders ohne
+    bekanntes Segment (z.B. strukturierte Produkte) werden nicht geprüft."""
+    if order_segment is None or order.side not in (OrderSide.BUY, OrderSide.SHORT):
+        return RiskCheckResult.ok()
+    existing = sum(
+        p.quantity * current_prices.get(p.symbol, p.avg_entry_price)
+        for p in ctx.positions
+        if p.segment == order_segment
+    )
+    added = order_notional(order, price)
+    limit = ctx.nav * max_pct_of_nav
+    if existing + added > limit:
+        return RiskCheckResult.reject(
+            f"Segment '{order_segment}' läge nach dieser Order ({existing + added:.2f}) "
+            f"über dem Limit von {max_pct_of_nav:.0%} des NAV ({limit:.2f})."
+        )
+    return RiskCheckResult.ok()
+
+
+def check_correlated_segment_exposure(
+    order: ProposedOrder,
+    ctx: PortfolioContext,
+    price: float,
+    current_prices: dict[str, float],
+    order_segment: str | None,
+    correlated_segments: set[str],
+    max_pct_of_nav: float,
+) -> RiskCheckResult:
+    """Kap. 6.8: kombinierte Exposure der korrelierten Segmente (Default:
+    Krypto-Mining + Digital Assets & Krypto-Oekosystem, siehe risk_config.yaml)
+    darf `max_pct_of_nav` des NAV nicht überschreiten."""
+    if not correlated_segments or order_segment not in correlated_segments:
+        return RiskCheckResult.ok()
+    if order.side not in (OrderSide.BUY, OrderSide.SHORT):
+        return RiskCheckResult.ok()
+    existing = sum(
+        p.quantity * current_prices.get(p.symbol, p.avg_entry_price)
+        for p in ctx.positions
+        if p.segment in correlated_segments
+    )
+    added = order_notional(order, price)
+    limit = ctx.nav * max_pct_of_nav
+    if existing + added > limit:
+        return RiskCheckResult.reject(
+            f"Korrelierte Segmente {sorted(correlated_segments)} lägen nach dieser Order "
+            f"({existing + added:.2f}) über dem Limit von {max_pct_of_nav:.0%} des NAV ({limit:.2f})."
+        )
+    return RiskCheckResult.ok()
+
+
+def check_micro_cap_exposure(
+    order: ProposedOrder,
+    ctx: PortfolioContext,
+    price: float,
+    current_prices: dict[str, float],
+    order_cap_tier: str | None,
+    max_pct_of_nav: float,
+) -> RiskCheckResult:
+    """Kap. 6.8: Micro-Cap-Sublimit über alle Micro-Cap-Titel (CapTier laut
+    Anhang A) hinweg, unabhängig vom Segment."""
+    if order.side not in (OrderSide.BUY, OrderSide.SHORT) or not _is_micro_cap(order_cap_tier):
+        return RiskCheckResult.ok()
+    existing = sum(
+        p.quantity * current_prices.get(p.symbol, p.avg_entry_price)
+        for p in ctx.positions
+        if _is_micro_cap(p.cap_tier)
+    )
+    added = order_notional(order, price)
+    limit = ctx.nav * max_pct_of_nav
+    if existing + added > limit:
+        return RiskCheckResult.reject(
+            f"Micro-Cap-Exposure läge nach dieser Order ({existing + added:.2f}) über dem "
+            f"Sublimit von {max_pct_of_nav:.0%} des NAV ({limit:.2f})."
+        )
+    return RiskCheckResult.ok()
+
+
+def check_top3_concentration(
+    order: ProposedOrder,
+    ctx: PortfolioContext,
+    price: float,
+    current_prices: dict[str, float],
+    max_pct_of_nav: float,
+) -> RiskCheckResult:
+    """Kap. 6.8: die drei grössten Einzelpositionen (nach Marktwert, je
+    Symbol über Long/Short summiert) dürfen zusammen `max_pct_of_nav` des
+    NAV nicht überschreiten."""
+    if order.side not in (OrderSide.BUY, OrderSide.SHORT):
+        return RiskCheckResult.ok()
+    values: dict[str, float] = {}
+    for p in ctx.positions:
+        values[p.symbol] = values.get(p.symbol, 0.0) + p.quantity * current_prices.get(p.symbol, p.avg_entry_price)
+    delta_qty = order.quantity if order.quantity is not None else order_notional(order, price) / price
+    values[order.symbol] = values.get(order.symbol, 0.0) + delta_qty * price
+    top3_total = sum(sorted(values.values(), reverse=True)[:3])
+    limit = ctx.nav * max_pct_of_nav
+    if top3_total > limit:
+        return RiskCheckResult.reject(
+            f"Top-3-Konzentration läge nach dieser Order ({top3_total:.2f}) über dem Limit "
+            f"von {max_pct_of_nav:.0%} des NAV ({limit:.2f})."
+        )
+    return RiskCheckResult.ok()
+
+
+def check_min_cash_quota(
+    order: ProposedOrder,
+    ctx: PortfolioContext,
+    price: float,
+    min_pct_of_nav: float,
+) -> RiskCheckResult:
+    """Kap. 6.8: Mindest-Cash-Quote - Orders, die Cash verbrauchen (buy/cover),
+    dürfen die Cash-Quote nicht unter `min_pct_of_nav` des NAV drücken."""
+    if order.side not in (OrderSide.BUY, OrderSide.COVER):
+        return RiskCheckResult.ok()
+    notional = order_notional(order, price)
+    resulting_cash = ctx.cash - notional
+    limit = ctx.nav * min_pct_of_nav
+    if resulting_cash < limit:
+        return RiskCheckResult.reject(
+            f"Resultierende Cash-Quote ({resulting_cash:.2f}) läge unter dem Minimum von "
+            f"{min_pct_of_nav:.0%} des NAV ({limit:.2f})."
+        )
+    return RiskCheckResult.ok()
+
+
+def check_circuit_breaker(
+    order: ProposedOrder,
+    ctx: PortfolioContext,
+    drawdown_pct: float,
+) -> RiskCheckResult:
+    """Kap. 6.8: Portfolio-Circuit-Breaker. Sobald der NAV seit seinem
+    bisherigen Höchststand (ctx.peak_nav) um mehr als abs(drawdown_pct)
+    gefallen ist, werden keine neuen/aufstockenden Hebelpositionen
+    (strukturierte Produkte) mehr zugelassen. Bestehende Positionen können
+    weiterhin reduziert/geschlossen werden; reguläre Aktien-/ETF-Orders sind
+    nicht betroffen (dafür gilt weiterhin nur der daily_loss_stop_pct)."""
+    if order.instrument_type.value not in STRUCTURED_INSTRUMENT_TYPES:
+        return RiskCheckResult.ok()
+    if order.side not in (OrderSide.BUY, OrderSide.SHORT):
+        return RiskCheckResult.ok()
+    if not ctx.peak_nav:
+        return RiskCheckResult.ok()
+    current_drawdown = (ctx.nav - ctx.peak_nav) / ctx.peak_nav
+    if current_drawdown <= drawdown_pct:
+        return RiskCheckResult.reject(
+            f"Circuit-Breaker aktiv: Drawdown {current_drawdown:.2%} seit Höchststand "
+            f"({ctx.peak_nav:.2f}) unterschreitet Schwelle {drawdown_pct:.2%} - keine neuen "
+            "Hebelpositionen erlaubt."
+        )
+    return RiskCheckResult.ok()
+
+
 def check_daily_loss_stop(ctx: PortfolioContext, daily_loss_stop_pct: float) -> RiskCheckResult:
     """Portfolio-wide gate: blocks ALL new/increasing orders once the loss
     threshold since the start of the current run is breached. Does not
@@ -211,11 +387,18 @@ def evaluate_order(
     price: float,
     current_prices: dict[str, float],
     config,
+    order_segment: str | None = None,
+    order_cap_tier: str | None = None,
 ) -> RiskCheckResult:
     """Runs all applicable guardrail checks for a single proposed order.
 
     `config` is a src.config.RiskConfig (typed loosely here to keep this
     module importable without a hard dependency on YAML loading in tests).
+
+    `order_segment`/`order_cap_tier` are the order's symbol's Anhang-A
+    taxonomy values (resolved by the caller from the watchlist - see
+    execution.py); None for symbols outside that taxonomy (e.g. structured
+    products), in which case the corresponding Kap.-6.8 checks no-op.
     """
     if order.side == OrderSide.SHORT and not config.allow_short:
         return RiskCheckResult.reject("Short-Positionen sind laut Risk-Config nicht erlaubt.")
@@ -234,6 +417,20 @@ def evaluate_order(
         check_structured_products_cap(
             order, ctx, price, current_prices, config.structured_products_max_notional_pct_of_nav
         ),
+        check_segment_weight(order, ctx, price, current_prices, order_segment, config.max_segment_weight_pct_of_nav),
+        check_correlated_segment_exposure(
+            order,
+            ctx,
+            price,
+            current_prices,
+            order_segment,
+            set(config.correlated_crypto_mining_segments),
+            config.max_correlated_crypto_mining_pct_of_nav,
+        ),
+        check_micro_cap_exposure(order, ctx, price, current_prices, order_cap_tier, config.max_micro_cap_pct_of_nav),
+        check_top3_concentration(order, ctx, price, current_prices, config.max_top3_concentration_pct_of_nav),
+        check_min_cash_quota(order, ctx, price, config.min_cash_pct_of_nav),
+        check_circuit_breaker(order, ctx, config.circuit_breaker_drawdown_pct),
     ]
     result = RiskCheckResult.ok()
     for c in checks:

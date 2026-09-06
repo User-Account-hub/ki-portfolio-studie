@@ -36,17 +36,29 @@ def get_open_positions(conn: sqlite3.Connection, portfolio_id: int) -> list[sqli
     ).fetchall()
 
 
-def open_positions_as_risk_objects(rows: list[sqlite3.Row]) -> list[OpenPosition]:
-    return [
-        OpenPosition(
-            symbol=r["symbol"],
-            instrument_type=r["instrument_type"],
-            side=r["side"],
-            quantity=r["quantity"],
-            avg_entry_price=r["avg_entry_price"],
+def open_positions_as_risk_objects(
+    rows: list[sqlite3.Row], symbol_metadata: Optional[dict] = None
+) -> list[OpenPosition]:
+    """`symbol_metadata` maps symbol -> object with .segment/.cap_tier
+    attributes (typically {s.symbol: s for s in watchlist.symbols}), used to
+    enrich positions for the Kap.-6.8 segment/cap-tier guardrails. Symbols
+    without an entry (e.g. structured products) get segment=cap_tier=None."""
+    symbol_metadata = symbol_metadata or {}
+    positions = []
+    for r in rows:
+        meta = symbol_metadata.get(r["symbol"])
+        positions.append(
+            OpenPosition(
+                symbol=r["symbol"],
+                instrument_type=r["instrument_type"],
+                side=r["side"],
+                quantity=r["quantity"],
+                avg_entry_price=r["avg_entry_price"],
+                segment=meta.segment if meta is not None else None,
+                cap_tier=meta.cap_tier if meta is not None else None,
+            )
         )
-        for r in rows
-    ]
+    return positions
 
 
 def count_trades_today_by_symbol(conn: sqlite3.Connection, portfolio_id: int) -> dict[str, int]:

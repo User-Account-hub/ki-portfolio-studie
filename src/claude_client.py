@@ -11,7 +11,7 @@ def get_trading_decision(
     user_prompt: str,
     api_key: str,
     model: str = "claude-sonnet-5",
-    max_tokens: int = 4096,
+    max_tokens: int = 8192,
 ) -> str:
     """Calls Claude and returns the raw text of its response.
 
