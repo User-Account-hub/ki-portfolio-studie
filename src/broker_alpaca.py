@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import TimeInForce
-from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
+from alpaca.trading.requests import GetCalendarRequest, LimitOrderRequest, MarketOrderRequest
 
 # Order states Alpaca will never transition out of on its own - no point
 # polling further once one of these is reached.
@@ -39,6 +39,23 @@ class FillResult:
 
 def get_trading_client(api_key: str, secret_key: str) -> TradingClient:
     return TradingClient(api_key, secret_key, paper=True)
+
+
+def is_trading_day(client: TradingClient) -> bool:
+    """True if the US equity market has a regular session today, False on a
+    full closure (weekend or market holiday).
+
+    Uses the calendar endpoint rather than clock.is_open, since is_open is
+    also False outside today's session hours on an otherwise completely
+    normal trading day (e.g. before 9:30 ET) - the calendar only returns an
+    entry for days the market opens at all, so an empty result for today
+    means the whole day is closed. "Today" is taken from Alpaca's own clock
+    timestamp (US market time), not the caller's local/server date, to
+    avoid any timezone ambiguity.
+    """
+    today = client.get_clock().timestamp.date()
+    calendar = client.get_calendar(GetCalendarRequest(start=today, end=today))
+    return len(calendar) > 0
 
 
 def get_account_snapshot(client: TradingClient) -> dict:

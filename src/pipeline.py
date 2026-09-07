@@ -86,49 +86,73 @@ def run() -> None:
         portfolio_row = db.get_portfolio(conn, app_config.portfolio_name)  # cash_balance kann sich geändert haben
 
         open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
-        prompt = build_user_prompt(portfolio_row, open_position_rows, watchlist, snapshots, risk_config)
-
-        log.info("Rufe Claude (%s) für Handelsentscheidung auf...", app_config.claude_model)
-        raw_response = get_trading_decision(
-            SYSTEM_PROMPT, prompt, api_key=app_config.anthropic_api_key, model=app_config.claude_model
-        )
 
         executed_results = []
         portfolio_commentary = ""
-        try:
-            decision_output = parse_orders_from_json(raw_response)
-            portfolio_commentary = decision_output.portfolio_commentary
-            log.info("Claude schlägt %d Order(s) vor.", len(decision_output.orders))
-            executed_results = execution.execute_proposed_orders(
-                conn,
-                portfolio_row,
-                decision_output.orders,
-                model=app_config.claude_model,
-                prompt=prompt,
-                raw_response=raw_response,
-                risk_config=risk_config,
-                current_prices=current_prices,
-                start_of_run_nav=start_of_run_nav,
-                broker_client=broker_client,
-                symbol_metadata=symbol_metadata,
-                peak_nav=peak_nav,
-            )
-        except OrderParsingError as exc:
-            log.error("Konnte Claude-Antwort nicht parsen: %s", exc)
+
+        if not broker_alpaca.is_trading_day(broker_client):
+            # Börse heute komplett geschlossen (Wochenende/Feiertag) - Market-
+            # Orders könnten ohnehin nicht füllen (siehe cron-Timing-Fix), also
+            # wird erst gar kein Claude-Aufruf gemacht (spart API-Kosten) und
+            # keine Order versucht. Trotzdem als Decision dokumentiert, damit
+            # jeder Lauf nachvollziehbar bleibt.
+            log.info("Börse heute geschlossen (Wochenende/Feiertag) - kein Handelsversuch, Claude wird nicht aufgerufen.")
+            portfolio_commentary = "Börse heute geschlossen, kein Handelsversuch."
             db.insert_decision(
                 conn,
                 portfolio_id=portfolio_row["id"],
                 model=app_config.claude_model,
-                prompt=prompt,
-                raw_response=raw_response,
+                prompt="(kein Prompt - Börse heute geschlossen, Claude wurde nicht aufgerufen)",
+                raw_response=None,
                 proposed_orders=None,
-                risk_check_result=[{"error": str(exc)}],
-                rationale=f"Parsing fehlgeschlagen: {exc}",
+                risk_check_result=[{"info": portfolio_commentary}],
+                rationale=portfolio_commentary,
                 forced_action=False,
                 approved=False,
                 executed=False,
             )
-            portfolio_commentary = f"(Antwort konnte nicht geparst werden: {exc})"
+        else:
+            prompt = build_user_prompt(portfolio_row, open_position_rows, watchlist, snapshots, risk_config)
+
+            log.info("Rufe Claude (%s) für Handelsentscheidung auf...", app_config.claude_model)
+            raw_response = get_trading_decision(
+                SYSTEM_PROMPT, prompt, api_key=app_config.anthropic_api_key, model=app_config.claude_model
+            )
+
+            try:
+                decision_output = parse_orders_from_json(raw_response)
+                portfolio_commentary = decision_output.portfolio_commentary
+                log.info("Claude schlägt %d Order(s) vor.", len(decision_output.orders))
+                executed_results = execution.execute_proposed_orders(
+                    conn,
+                    portfolio_row,
+                    decision_output.orders,
+                    model=app_config.claude_model,
+                    prompt=prompt,
+                    raw_response=raw_response,
+                    risk_config=risk_config,
+                    current_prices=current_prices,
+                    start_of_run_nav=start_of_run_nav,
+                    broker_client=broker_client,
+                    symbol_metadata=symbol_metadata,
+                    peak_nav=peak_nav,
+                )
+            except OrderParsingError as exc:
+                log.error("Konnte Claude-Antwort nicht parsen: %s", exc)
+                db.insert_decision(
+                    conn,
+                    portfolio_id=portfolio_row["id"],
+                    model=app_config.claude_model,
+                    prompt=prompt,
+                    raw_response=raw_response,
+                    proposed_orders=None,
+                    risk_check_result=[{"error": str(exc)}],
+                    rationale=f"Parsing fehlgeschlagen: {exc}",
+                    forced_action=False,
+                    approved=False,
+                    executed=False,
+                )
+                portfolio_commentary = f"(Antwort konnte nicht geparst werden: {exc})"
 
         portfolio_row = db.get_portfolio(conn, app_config.portfolio_name)
         open_position_rows = db.get_open_positions(conn, portfolio_row["id"])

@@ -6,9 +6,10 @@ and manually, not via automated tests.
 """
 from __future__ import annotations
 
+import datetime
 from types import SimpleNamespace
 
-from src.broker_alpaca import submit_equity_order
+from src.broker_alpaca import is_trading_day, submit_equity_order
 
 
 def make_order(order_id="order-1", status="new", filled_qty=None, filled_avg_price=None):
@@ -154,3 +155,46 @@ def test_submit_equity_order_cancel_failure_does_not_crash():
     assert fill.status == "pending"
     assert fill.filled_qty == 0.0
     assert client.cancel_calls == ["o1"]
+
+
+# --- is_trading_day -----------------------------------------------------------
+
+
+class FakeCalendarClient:
+    """Stands in for the two Alpaca calls is_trading_day makes: get_clock()
+    (for "today", in market time) and get_calendar() (empty list = full
+    closure)."""
+
+    def __init__(self, today: datetime.date, calendar_entries: list):
+        self._today = today
+        self._calendar_entries = calendar_entries
+        self.calendar_requests = []
+
+    def get_clock(self):
+        return SimpleNamespace(timestamp=SimpleNamespace(date=lambda: self._today))
+
+    def get_calendar(self, request):
+        self.calendar_requests.append((request.start, request.end))
+        return self._calendar_entries
+
+
+def test_is_trading_day_true_on_a_normal_trading_day():
+    tuesday = datetime.date(2026, 9, 8)
+    client = FakeCalendarClient(
+        today=tuesday,
+        calendar_entries=[SimpleNamespace(date=tuesday, open="09:30", close="16:00")],
+    )
+    assert is_trading_day(client) is True
+    assert client.calendar_requests == [(tuesday, tuesday)]
+
+
+def test_is_trading_day_false_on_a_weekend():
+    sunday = datetime.date(2026, 9, 6)
+    client = FakeCalendarClient(today=sunday, calendar_entries=[])
+    assert is_trading_day(client) is False
+
+
+def test_is_trading_day_false_on_a_market_holiday():
+    labor_day = datetime.date(2026, 9, 7)
+    client = FakeCalendarClient(today=labor_day, calendar_entries=[])
+    assert is_trading_day(client) is False
