@@ -151,7 +151,12 @@ Ein Report landet in `reports/report_<timestamp>.md`.
 ## GitHub Actions: wöchentlicher Lauf
 
 Der Workflow `.github/workflows/weekly_pipeline.yml` läuft jeden Montag um
-07:00 UTC (und ist manuell über "Run workflow" auslösbar).
+15:00 UTC (und ist manuell über "Run workflow" auslösbar) - bewusst innerhalb
+der regulären NYSE-Handelszeit (9:30-16:00 ET), unabhängig von der
+US-Sommerzeit. Die ursprüngliche Zeit (07:00 UTC) lag ganzjährig vor
+Börsenöffnung, wodurch Market-Orders nie füllen konnten (Alpaca queued sie
+bestenfalls für die nächste Session) - kein Code-Bug, sondern ein falsch
+getimter Trigger.
 
 **Secrets** (Repo-Settings → Secrets and variables → Actions → *Secrets*):
 

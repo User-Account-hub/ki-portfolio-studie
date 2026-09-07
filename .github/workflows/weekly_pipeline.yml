@@ -2,8 +2,20 @@ name: Weekly Portfolio Pipeline
 
 on:
   schedule:
-    # Jeden Montag 07:00 UTC
-    - cron: "0 7 * * 1"
+    # Jeden Montag 15:00 UTC - bewusst innerhalb der reguraeren NYSE-Handelszeit
+    # (9:30-16:00 ET) unabhaengig von der US-Sommerzeit: 9:30-16:00 ET entspricht
+    # 13:30-20:00 UTC waehrend EDT (Maerz-November) bzw. 14:30-21:00 UTC waehrend
+    # EST (November-Maerz); 15:00 UTC liegt sicher in beiden Faellen mitten in der
+    # Handelszeit. GitHub Actions cron folgt nicht der US-Sommerzeit, daher fixe
+    # UTC-Uhrzeit statt "Marktzeit" direkt planbar.
+    #
+    # Vorherige Zeit war 07:00 UTC (= 09:00-09:19 Schweizer Zeit je nach Sommer-/
+    # Winterzeit) - das lag IMMER vor Boersenoeffnung. Da Market-Orders ausserhalb
+    # der Handelszeit nicht fuellen koennen (Alpaca queued sie bestenfalls fuer die
+    # naechste Session), fuehrte das dazu, dass saemtliche Trades im 2026-09-07-Lauf
+    # als "nicht ausgefuehrt" uebersprungen wurden - kein Bug im Code, sondern
+    # falsch getimter Trigger.
+    - cron: "0 15 * * 1"
   workflow_dispatch: {}
 
 permissions:
