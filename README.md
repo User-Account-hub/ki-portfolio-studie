@@ -41,19 +41,34 @@ reports/             Generierte Markdown-Reports (werden versioniert)
    (Pydantic).
 4. Jede vorgeschlagene Order durch `risk_guardrails.evaluate_order` prüfen;
    nur freigegebene Orders werden ausgeführt.
-5. Aktien/ETFs laufen über echte Alpaca-Paper-Orders; strukturierte
-   Produkte werden simuliert gebucht (siehe Einschränkung unten).
+5. Aktien/ETFs laufen über echte Alpaca-Paper-Orders (aktuell alle
+   Watchlist-Titel inkl. der gehebelten ETF-Proxies NVDL/TSDD); ein
+   `manual_simulation`-Pfad für echte strukturierte Produkte existiert
+   weiterhin, ist aber ungenutzt (siehe Einschränkung unten).
 6. NAV-Verlauf rekonstruieren, Kennzahlen berechnen, Report schreiben.
 
 ## Wichtige Einschränkungen & Design-Entscheidungen
 
-- **Alpaca deckt keine strukturierten Produkte ab.** Hebelzertifikate,
-  Mini-Futures und Optionsscheine sind Schweizer/deutsche Retail-Derivate;
-  Alpaca handelt nur US-Aktien/ETFs/Optionen/Crypto. Diese Instrumente
-  werden daher in der SQLite-DB als eigener `instrument_type` geführt und
-  **simuliert** ausgeführt (Preis/Notional-Buchung ohne echte Order,
-  `trades.source = 'manual_simulation'`). Der 20%-NAV-Cap wird trotzdem
-  hart durchgesetzt.
+- **Strukturierte Produkte (`leverage_certificate`/`mini_future`/`warrant`,
+  simuliert über `trades.source = 'manual_simulation'`) sind aktuell
+  ungenutzt.** Die ursprünglichen Platzhalter (`MINI-NVDA-LONG-1`,
+  `WARRANT-TSLA-PUT-1`) wurden gemäss Kap. 6.7 der Thesis durch echte,
+  bei Alpaca handelbare gehebelte ETFs ersetzt (`NVDL` - GraniteShares 2x
+  Long NVDA, `TSDD` - GraniteShares 2x Short TSLA; `instrument_type: etf`),
+  da Alpaca keine Schweizer/deutschen Retail-Derivate (Hebelzertifikate,
+  Mini-Futures, Optionsscheine) abdeckt, wohl aber gehebelte/inverse
+  Single-Stock-ETFs. Diese laufen jetzt über echte Alpaca-Paper-Orders wie
+  jede andere Aktie/ETF. Der `manual_simulation`-Mechanismus bleibt im Code
+  bestehen (falls später echte strukturierte Produkte mit echten
+  Emittenten-Kennungen ergänzt werden), greift aber solange keine
+  Watchlist-Einträge mit diesem `instrument_type` existieren.
+  **Hinweis:** `check_structured_products_cap` und der Kap.-6.8-
+  Circuit-Breaker (`check_circuit_breaker`) greifen ausschliesslich über
+  `instrument_type in {leverage_certificate, mini_future, warrant}` - da
+  NVDL/TSDD jetzt `etf` sind, zählen sie NICHT mehr zu diesen beiden
+  Leitplanken, obwohl sie wirtschaftlich weiterhin 2x gehebelt sind. Beide
+  Checks greifen wie zuvor auf ihre jeweiligen Segment-/Positionsgrössen-
+  Limiten über die übrigen Guardrails.
 - **"Kein Margin-Trading"** wird als "keine gehebelte Kaufkraft über 1x
   Cash hinaus" interpretiert (`risk_guardrails.check_no_margin`). Das für
   Shorting technisch nötige Alpaca-Margin-Konto ist davon ausgenommen, da
@@ -122,10 +137,12 @@ konfigurierten Startkapital (`INITIAL_CASH_BALANCE`, Default 100'000).
 
 ### 4. Anlage-Universum & Risk-Limiten anpassen
 
-- `config/watchlist.yaml`: Symbole, die Claude vorschlagen darf. Enthält
-  Beispiel-Platzhalter für strukturierte Produkte (`MINI-NVDA-LONG-1`,
-  `WARRANT-TSLA-PUT-1`) - vor produktivem Einsatz durch echte
-  Produktkennungen deines Emittenten ersetzen.
+- `config/watchlist.yaml`: Symbole, die Claude vorschlagen darf. Das
+  100-Titel-Aktienuniversum (Anhang A der Thesis) plus zwei gehebelte
+  ETF-Proxies für Long-/Short-Exposure auf NVDA/TSLA (`NVDL`, `TSDD`,
+  Kap. 6.7). Ein `instrument_type: mini_future/warrant/leverage_certificate`
+  für echte strukturierte Produkte ist weiterhin unterstützt, aktuell aber
+  nicht in der Watchlist vorhanden.
 - `config/risk_config.yaml`: alle Guardrail-Limiten (Positionsgrösse,
   Trade-Notional, Tagesverlust-Stop, max. Trades/Tag, strukturierte-
   Produkte-Cap, Short-Stop-Loss, Margin-Verbot).

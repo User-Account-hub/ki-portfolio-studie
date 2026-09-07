@@ -433,12 +433,16 @@ symbols:
     segment: "Kritische Materialien & Seltene Erden"
     cap_tier: "Small-Cap"
 
-  # Beispiele fuer strukturierte Produkte auf Titel des Universums.
-  # Diese Symbole sind Platzhalter (z.B. Valor/ISIN-Kuerzel eines Emittenten) -
-  # bitte vor Live-Nutzung durch echte Produktkennungen ersetzen.
-  - symbol: MINI-NVDA-LONG-1
-    instrument_type: mini_future
+  # Gehebelte ETF-Proxies fuer Long-/Short-Exposure auf Einzeltitel des
+  # Universums (Kap. 6.7 Thesis: "liquid options or leveraged/inverse ETF
+  # proxies, frozen per ticker at project start"). Echte, bei yfinance und
+  # Alpaca handelbare Instrumente - instrument_type: etf, keine Simulation
+  # noetig (siehe README fuer die Auswahlbegruendung und den Hinweis, dass
+  # sie dadurch NICHT mehr unter check_structured_products_cap/
+  # check_circuit_breaker fallen).
+  - symbol: NVDL
+    instrument_type: etf  # GraniteShares 2x Long NVDA Daily ETF (Long-Hebel-Proxy auf NVDA)
     underlying_symbol: NVDA
-  - symbol: WARRANT-TSLA-PUT-1
-    instrument_type: warrant
+  - symbol: TSDD
+    instrument_type: etf  # GraniteShares 2x Short TSLA Daily ETF (Short/Inverse-Proxy auf TSLA)
     underlying_symbol: TSLA
