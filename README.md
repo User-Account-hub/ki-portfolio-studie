@@ -62,12 +62,18 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   gebuchte Cash (Verkaufserlös), Cover reduziert es wieder - siehe
   Kommentar in `src/execution.py`. Damit bleibt der NAV beim Öffnen einer
   Position unverändert; P&L entsteht ausschliesslich durch Kursbewegung.
-- **NAV-Verlauf ohne eigene Tabelle:** Die DB hat bewusst nur die vier
-  angefragten Tabellen. `metrics.py` rekonstruiert den Wochenverlauf durch
-  Replay der `trades`-Tabelle plus historischen Kursen (yfinance) statt
-  über eine separate NAV-Historie-Tabelle. Das ist eine Näherung
+- **NAV-Wochenverlauf ohne eigene Historien-Tabelle für den Report:**
+  `metrics.py` rekonstruiert den Wochenverlauf für Report/Sharpe/Max-Drawdown
+  weiterhin durch Replay der `trades`-Tabelle plus historischen Kursen
+  (yfinance), nicht über eine gespeicherte Kurve. Das ist eine Näherung
   (Intra-Wochen-Bewegungen bereits geschlossener Positionen fehlen), für
   eine wöchentliche Fallstudie aber ausreichend.
+- **`nav_history`-Tabelle (5. Tabelle, seit Kap.-6.8-Guardrails):** eng
+  zweckgebunden - pro Pipeline-Lauf genau ein Eintrag mit dem NAV zu
+  Lauf-Beginn. Einziger Zweck: `risk_guardrails.check_circuit_breaker` einen
+  echten historischen NAV-Höchststand (`db.get_peak_nav`, `MAX(nav)` über
+  alle bisherigen Läufe) liefern, statt einer Näherung aus Startkapital und
+  aktuellem Stand. Ersetzt nicht die obige Wochenverlauf-Rekonstruktion.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig

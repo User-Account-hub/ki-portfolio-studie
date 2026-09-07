@@ -76,6 +76,21 @@ CREATE TABLE IF NOT EXISTS trades (
     executed_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Ein Eintrag pro Pipeline-Lauf: NAV zu Lauf-Beginn (vor Stop-Loss-Sweep/
+-- Claude-Entscheidung). Einziger Zweck: dem Kap.-6.8-Circuit-Breaker
+-- (risk_guardrails.check_circuit_breaker) den tatsaechlichen historischen
+-- NAV-Hoechststand liefern (echtes MAX ueber alle bisherigen Laeufe, nicht
+-- nur eine Naeherung aus Startkapital/aktuellem Stand). Ersetzt NICHT die
+-- Wochenverlauf-Rekonstruktion in metrics.py (die bleibt Trade-Replay-basiert
+-- fuer den vollen Report-Chart inkl. Sharpe/Drawdown) - siehe README.
+CREATE TABLE IF NOT EXISTS nav_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    portfolio_id    INTEGER NOT NULL REFERENCES portfolios(id),
+    recorded_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    nav             REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_portfolio_status ON positions(portfolio_id, status);
 CREATE INDEX IF NOT EXISTS idx_trades_portfolio_symbol_date ON trades(portfolio_id, symbol, executed_at);
 CREATE INDEX IF NOT EXISTS idx_decisions_portfolio_date ON decisions(portfolio_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_nav_history_portfolio_recorded ON nav_history(portfolio_id, recorded_at);

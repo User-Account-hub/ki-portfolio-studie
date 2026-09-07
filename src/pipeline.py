@@ -45,6 +45,7 @@ def run() -> None:
     broker_client = broker_alpaca.get_trading_client(app_config.alpaca_api_key, app_config.alpaca_secret_key)
 
     with db.get_connection(app_config.db_path) as conn:
+        db.ensure_nav_history_table(conn)  # idempotente Migration, siehe db.py-Docstring
         portfolio_row = db.get_portfolio(conn, app_config.portfolio_name)
         open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
 
@@ -66,11 +67,15 @@ def run() -> None:
             current_prices,
         )
         log.info("NAV zu Lauf-Beginn: %.2f", start_of_run_nav)
-        # Vereinfachter NAV-Höchststand für den Kap.-6.8-Circuit-Breaker: ohne
-        # dedizierte NAV-Historie (siehe metrics.py-Docstring) wird das
-        # Maximum aus Startkapital und aktuellem Lauf-Start-NAV verwendet,
-        # statt für jeden Lauf zusätzlich die volle Historie zu rekonstruieren.
-        peak_nav = max(app_config.initial_cash_balance, start_of_run_nav)
+
+        # Persistiert den Lauf-Start-NAV in nav_history und liest danach den
+        # echten historischen Höchststand (MAX über alle bisherigen Läufe)
+        # zurück - Grundlage für den Kap.-6.8-Circuit-Breaker. Reihenfolge
+        # wichtig: erst schreiben, dann lesen, damit ein neuer Höchststand in
+        # genau diesem Lauf sofort mitzählt.
+        db.record_nav(conn, portfolio_row["id"], start_of_run_nav)
+        peak_nav = db.get_peak_nav(conn, portfolio_row["id"])
+        log.info("NAV-Höchststand (historisch): %.2f", peak_nav)
 
         log.info("Prüfe offene Short-Positionen auf Stop-Loss-Trigger...")
         forced_actions = execution.run_short_stop_loss_sweep(

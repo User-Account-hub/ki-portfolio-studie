@@ -36,10 +36,10 @@ class PortfolioContext:
     positions: list[OpenPosition] = field(default_factory=list)
     trades_today_by_symbol: dict[str, int] = field(default_factory=dict)
     start_of_run_nav: float | None = None  # NAV vor dem aktuellen Pipeline-Lauf
-    # Bisheriger NAV-Hoechststand, fuer check_circuit_breaker. Vereinfachung
-    # (siehe pipeline.py): max(initial_cash_balance, start_of_run_nav) statt
-    # einer vollen Historien-Rekonstruktion - konsistent mit der bereits in
-    # metrics.py dokumentierten Naeherungs-Philosophie dieses Projekts.
+    # Echter historischer NAV-Hoechststand (MAX ueber alle bisherigen Laeufe
+    # aus der nav_history-Tabelle, siehe db.get_peak_nav), fuer
+    # check_circuit_breaker. None nur, wenn ein Portfolio noch keinen
+    # nav_history-Eintrag hat (z.B. in Tests ohne DB).
     peak_nav: float | None = None
 
     def position_for(self, symbol: str) -> OpenPosition | None:

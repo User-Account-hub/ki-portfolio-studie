@@ -21,6 +21,48 @@ def get_connection(db_path: str) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def ensure_nav_history_table(conn: sqlite3.Connection) -> None:
+    """Forward-compatible migration for a db/portfolio.db created before
+    nav_history existed (e.g. an already-deployed DB from earlier pipeline
+    runs). CREATE TABLE IF NOT EXISTS is a no-op when the table is already
+    there (via a fresh db/init_db.py run using the current schema.sql) -
+    safe to call unconditionally at the start of every pipeline run; never
+    touches existing tables/data."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS nav_history (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            portfolio_id    INTEGER NOT NULL REFERENCES portfolios(id),
+            recorded_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            nav             REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_nav_history_portfolio_recorded ON nav_history(portfolio_id, recorded_at);
+        """
+    )
+    conn.commit()
+
+
+def record_nav(conn: sqlite3.Connection, portfolio_id: int, nav: float) -> int:
+    """Records one NAV data point (typically the NAV at pipeline run start)."""
+    cur = conn.execute(
+        "INSERT INTO nav_history (portfolio_id, nav) VALUES (?, ?)",
+        (portfolio_id, nav),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_peak_nav(conn: sqlite3.Connection, portfolio_id: int) -> Optional[float]:
+    """True historical NAV high-water mark (MAX over every recorded run for
+    this portfolio) - used by risk_guardrails.check_circuit_breaker. Returns
+    None if nav_history has no rows yet for this portfolio (fresh DB before
+    the first record_nav call)."""
+    row = conn.execute(
+        "SELECT MAX(nav) AS peak FROM nav_history WHERE portfolio_id = ?", (portfolio_id,)
+    ).fetchone()
+    return row["peak"] if row is not None and row["peak"] is not None else None
+
+
 def get_portfolio(conn: sqlite3.Connection, name: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM portfolios WHERE name = ?", (name,)).fetchone()
     if row is None:
