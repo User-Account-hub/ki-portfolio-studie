@@ -79,9 +79,35 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add db/*.db reports/*.md
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: weekly pipeline run $(date -u +%Y-%m-%d)"
-            git push
-          else
+          if git diff --cached --quiet; then
             echo "Keine Änderungen zum Committen."
+            exit 0
           fi
+
+          git commit -m "chore: weekly pipeline run $(date -u +%Y-%m-%d)"
+
+          # Zwischen Checkout (Job-Start) und diesem Push kann der Remote-
+          # Branch weitergelaufen sein (z.B. ein manueller Push waehrend der
+          # Lauf noch aktiv war) - das fuehrte in Lauf #5 zu einem
+          # non-fast-forward-Fehlschlag, der den ganzen Job scheitern liess,
+          # obwohl Report/DB laengst fertig waren. Bei Ablehnung: Remote-Stand
+          # per rebase holen und erneut versuchen, statt sofort aufzugeben.
+          max_attempts=5
+          attempt=1
+          while true; do
+            if git push; then
+              echo "Push erfolgreich (Versuch $attempt/$max_attempts)."
+              break
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "::error::Push nach $max_attempts Versuchen weiterhin fehlgeschlagen."
+              exit 1
+            fi
+            echo "Push abgelehnt (Versuch $attempt/$max_attempts) - hole Remote-Stand per 'git pull --rebase' und versuche erneut..."
+            if ! git pull --rebase origin master; then
+              echo "::error::git pull --rebase konnte nicht sauber angewendet werden (echter Konflikt, z.B. gleichzeitige Aenderung an db/portfolio.db) - breche ab, statt einen inkonsistenten Merge zu committen. Bitte manuell pruefen."
+              git rebase --abort || true
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+          done
