@@ -2,7 +2,7 @@ name: Weekly Portfolio Pipeline
 
 on:
   schedule:
-    # Jeden Montag 15:00 UTC - bewusst innerhalb der reguraeren NYSE-Handelszeit
+    # Jeden Montag UND Donnerstag, 15:00 UTC - bewusst innerhalb der reguraeren NYSE-Handelszeit
     # (9:30-16:00 ET) unabhaengig von der US-Sommerzeit: 9:30-16:00 ET entspricht
     # 13:30-20:00 UTC waehrend EDT (Maerz-November) bzw. 14:30-21:00 UTC waehrend
     # EST (November-Maerz); 15:00 UTC liegt sicher in beiden Faellen mitten in der
@@ -15,7 +15,14 @@ on:
     # naechste Session), fuehrte das dazu, dass saemtliche Trades im 2026-09-07-Lauf
     # als "nicht ausgefuehrt" uebersprungen wurden - kein Bug im Code, sondern
     # falsch getimter Trigger.
+    #
+    # Seit 2026-09-08: zweimal woechentlich statt einmal (Montag + Donnerstag),
+    # jeweils 15:00 UTC. src/metrics.py rekonstruiert den NAV-
+    # Verlauf entsprechend auf Mo+Do-Checkpoints (siehe reconstruct_nav_history
+    # `freqs`-Parameter) statt nur woechentlich - beide Stellen muessen bei einer
+    # weiteren Frequenzaenderung zusammen angepasst werden.
     - cron: "0 15 * * 1"
+    - cron: "0 15 * * 4"
   workflow_dispatch: {}
 
 permissions:

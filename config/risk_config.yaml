@@ -13,7 +13,8 @@ max_position_size_pct_of_portfolio: 0.10
 max_trade_notional_pct_of_cash: 0.05
 
 # Verlustgrenze seit dem Start des aktuellen Pipeline-Laufs
-# ("Tagesverlust" im Sinne des Runs, da der Cron wöchentlich läuft).
+# ("Tagesverlust" im Sinne des Runs, nicht des Kalendertags, da der Cron
+# mehrmals woechentlich laeuft, aktuell Montag+Donnerstag).
 # Wird sie unterschritten, werden KEINE neuen Positionen mehr eröffnet
 # oder aufgestockt - Pflicht-Stop-Loss-Schließungen (siehe unten)
 # sind davon ausgenommen.

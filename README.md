@@ -1,6 +1,7 @@
 # KI-gestützte Portfolio-Fallstudie mit Claude
 
-Eine Fallstudie, in der Claude wöchentlich Handelsentscheidungen für ein
+Eine Fallstudie, in der Claude zweimal wöchentlich (Montag/Donnerstag)
+Handelsentscheidungen für ein
 **Paper-Trading-Portfolio** vorschlägt. Alle Entscheidungen durchlaufen
 serverseitige Risk-Guardrails, bevor sie über die **Alpaca Paper Trading
 API** ausgeführt werden. Es fliesst zu keinem Zeitpunkt echtes Geld.
@@ -77,12 +78,15 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   gebuchte Cash (Verkaufserlös), Cover reduziert es wieder - siehe
   Kommentar in `src/execution.py`. Damit bleibt der NAV beim Öffnen einer
   Position unverändert; P&L entsteht ausschliesslich durch Kursbewegung.
-- **NAV-Wochenverlauf ohne eigene Historien-Tabelle für den Report:**
-  `metrics.py` rekonstruiert den Wochenverlauf für Report/Sharpe/Max-Drawdown
-  weiterhin durch Replay der `trades`-Tabelle plus historischen Kursen
-  (yfinance), nicht über eine gespeicherte Kurve. Das ist eine Näherung
-  (Intra-Wochen-Bewegungen bereits geschlossener Positionen fehlen), für
-  eine wöchentliche Fallstudie aber ausreichend.
+- **NAV-Verlauf ohne eigene Historien-Tabelle für den Report:** `metrics.py`
+  rekonstruiert den Verlauf für Report/Sharpe/Max-Drawdown weiterhin durch
+  Replay der `trades`-Tabelle plus historischen Kursen (yfinance), nicht über
+  eine gespeicherte Kurve. Die Checkpoint-Frequenz (`reconstruct_nav_history`,
+  Parameter `freqs`, aktuell Montag+Donnerstag) und die daraus abgeleitete
+  Annualisierung (`periods_per_year`) folgen dem tatsächlichen Cron-Rhythmus
+  und müssen bei einer erneuten Frequenzänderung mit angepasst werden. Das
+  Ganze ist eine Näherung (Kursbewegungen zwischen Checkpoints auf bereits
+  geschlossenen Positionen fehlen), für diese Fallstudie aber ausreichend.
 - **`nav_history`-Tabelle (5. Tabelle, seit Kap.-6.8-Guardrails):** eng
   zweckgebunden - pro Pipeline-Lauf genau ein Eintrag mit dem NAV zu
   Lauf-Beginn. Einziger Zweck: `risk_guardrails.check_circuit_breaker` einen
@@ -165,15 +169,23 @@ python -m src.pipeline
 
 Ein Report landet in `reports/report_<timestamp>.md`.
 
-## GitHub Actions: wöchentlicher Lauf
+## GitHub Actions: zweimal wöchentlicher Lauf
 
-Der Workflow `.github/workflows/weekly_pipeline.yml` läuft jeden Montag um
-15:00 UTC (und ist manuell über "Run workflow" auslösbar) - bewusst innerhalb
-der regulären NYSE-Handelszeit (9:30-16:00 ET), unabhängig von der
-US-Sommerzeit. Die ursprüngliche Zeit (07:00 UTC) lag ganzjährig vor
+Der Workflow `.github/workflows/weekly_pipeline.yml` läuft jeden **Montag und
+Donnerstag** um 15:00 UTC (und ist manuell über "Run workflow" auslösbar) -
+bewusst innerhalb der regulären NYSE-Handelszeit (9:30-16:00 ET), unabhängig
+von der US-Sommerzeit. Die ursprüngliche Zeit (07:00 UTC) lag ganzjährig vor
 Börsenöffnung, wodurch Market-Orders nie füllen konnten (Alpaca queued sie
 bestenfalls für die nächste Session) - kein Code-Bug, sondern ein falsch
 getimter Trigger.
+
+Bei einer weiteren Änderung des Rhythmus (Wochentage oder Häufigkeit) muss
+`src/metrics.py`s `reconstruct_nav_history(freqs=...)` entsprechend angepasst
+werden - sonst driftet die daraus abgeleitete Annualisierung (Volatilität,
+Sharpe Ratio) von der tatsächlichen Lauf-Frequenz weg. Der Dateiname
+`weekly_pipeline.yml` (und der interne `chore: weekly pipeline run`-Commit-
+Präfix) blieb aus Kompatibilität unverändert - **"weekly" im Namen ist
+historisch, nicht mehr wörtlich zu nehmen.**
 
 **Secrets** (Repo-Settings → Secrets and variables → Actions → *Secrets*):
 
@@ -192,7 +204,7 @@ die Defaults aus dem Workflow):
 
 Die SQLite-Datei (`db/*.db`) und die generierten Reports werden vom
 Workflow nach jedem Lauf zurück ins Repository committet, damit der
-Portfolio-Zustand zwischen den wöchentlichen Läufen erhalten bleibt. Das
+Portfolio-Zustand zwischen den Läufen erhalten bleibt. Das
 Repo braucht dafür `permissions: contents: write` (bereits im Workflow
 gesetzt).
 

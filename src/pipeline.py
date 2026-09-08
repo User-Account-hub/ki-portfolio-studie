@@ -1,4 +1,7 @@
-"""Main entrypoint for one pipeline run (intended to be triggered weekly by CI).
+"""Main entrypoint for one pipeline run (triggered twice weekly by CI - Monday
+and Thursday, see .github/workflows/weekly_pipeline.yml; src/metrics.py's
+reconstruct_nav_history must be kept in sync with this cadence via its
+`freqs` parameter).
 
 Steps:
   1. Load config, connect to DB.

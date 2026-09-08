@@ -1,12 +1,19 @@
 """Performance metrics.
 
-The DB schema deliberately has no dedicated NAV-history table (only the
-four requested tables). Instead, the equity curve is reconstructed here by
-replaying `trades` chronologically (cash + position bookkeeping mirrors
+The equity curve for the report/chart is reconstructed here by replaying
+`trades` chronologically (cash + position bookkeeping mirrors
 execution.py's cash-flow convention) and marking open positions to market
-using historical closes from yfinance at each weekly checkpoint. This is an
-approximation (intra-week price moves on already-closed positions are not
-captured), acceptable for a weekly-cadence paper-trading case study.
+using historical closes from yfinance at each checkpoint. This is an
+approximation (intra-period price moves on already-closed positions are not
+captured), acceptable for this paper-trading case study's cadence.
+
+Checkpoint frequency (and therefore the annualization factor used in
+compute_metrics) is driven by `reconstruct_nav_history`'s `freqs` parameter,
+NOT hardcoded - it must match however often the pipeline actually runs (see
+.github/workflows/weekly_pipeline.yml's cron schedule). Two pandas weekly
+offset aliases, one per run day (default: Monday + Thursday), currently
+give 2 checkpoints/week; adding/removing a run day means updating `freqs`
+here to match, nothing else in this module.
 """
 from __future__ import annotations
 
@@ -30,6 +37,9 @@ class NavHistory:
     dates: list[pd.Timestamp]
     nav: list[float]
     benchmark_normalized: list[float]
+    # Checkpoints/Jahr, abgeleitet aus den `freqs` von reconstruct_nav_history -
+    # treibt die Annualisierung in compute_metrics (Volatilitaet, Sharpe).
+    periods_per_year: float
 
 
 @dataclass(frozen=True)
@@ -99,17 +109,29 @@ def reconstruct_nav_history(
     trades: list[sqlite3.Row],
     watchlist_underlyings: dict[str, str],
     benchmark_symbol: str,
-    freq: str = "W-MON",
+    freqs: tuple[str, ...] = ("W-MON", "W-THU"),
 ) -> NavHistory:
+    """`freqs` are pandas weekly offset aliases, one per weekday the pipeline
+    runs (default: Monday + Thursday, matching the current cron schedule -
+    see module docstring). periods_per_year is derived as 52 * len(freqs),
+    since each alias contributes one checkpoint per week."""
     initial_cash = portfolio_row["initial_cash_balance"]
+    periods_per_year = 52 * len(freqs)
 
     if not trades:
-        return NavHistory(dates=[pd.Timestamp.today()], nav=[initial_cash], benchmark_normalized=[initial_cash])
+        return NavHistory(
+            dates=[pd.Timestamp.today()],
+            nav=[initial_cash],
+            benchmark_normalized=[initial_cash],
+            periods_per_year=periods_per_year,
+        )
 
     snapshots = _replay_ledger(trades, initial_cash)
     start = snapshots[0]["timestamp"].normalize()
     end = pd.Timestamp.today().normalize()
-    checkpoints = pd.date_range(start=start, end=end, freq=freq)
+    checkpoints = pd.DatetimeIndex(
+        sorted({ts for freq in freqs for ts in pd.date_range(start=start, end=end, freq=freq)})
+    )
     if len(checkpoints) == 0 or checkpoints[-1] < end:
         checkpoints = checkpoints.append(pd.DatetimeIndex([end]))
 
@@ -157,7 +179,9 @@ def reconstruct_nav_history(
         else:
             benchmark_normalized.append(initial_cash * (price / benchmark_start_price))
 
-    return NavHistory(dates=dates, nav=nav_values, benchmark_normalized=benchmark_normalized)
+    return NavHistory(
+        dates=dates, nav=nav_values, benchmark_normalized=benchmark_normalized, periods_per_year=periods_per_year
+    )
 
 
 def compute_metrics(nav_history: NavHistory, risk_free_rate_annual: float = 0.0) -> MetricsResult:
@@ -168,7 +192,7 @@ def compute_metrics(nav_history: NavHistory, risk_free_rate_annual: float = 0.0)
     total_return = nav.iloc[-1] / nav.iloc[0] - 1
     last_period_return = float(returns.iloc[-1]) if not returns.empty else None
 
-    periods_per_year = 52  # wöchentliche Checkpoints
+    periods_per_year = nav_history.periods_per_year
     if len(returns) >= 2 and returns.std() > 0:
         rf_per_period = risk_free_rate_annual / periods_per_year
         annualized_vol = float(returns.std() * np.sqrt(periods_per_year))
