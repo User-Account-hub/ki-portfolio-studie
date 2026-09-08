@@ -1,9 +1,12 @@
 """Wrapper around the Anthropic Messages API for the trading-decision call."""
 from __future__ import annotations
 
+import logging
 import sys
 
 import anthropic
+
+log = logging.getLogger("pipeline")
 
 
 def get_trading_decision(
@@ -11,7 +14,7 @@ def get_trading_decision(
     user_prompt: str,
     api_key: str,
     model: str = "claude-sonnet-5",
-    max_tokens: int = 8192,
+    max_tokens: int = 16000,
 ) -> str:
     """Calls Claude and returns the raw text of its response.
 
@@ -45,4 +48,16 @@ def get_trading_decision(
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
+    if response.stop_reason == "max_tokens":
+        # Antwort wurde hart am Token-Limit abgeschnitten - typischerweise
+        # mitten in einem JSON-String/Objekt, was order_schema.py als
+        # "ungueltiges JSON" meldet. Ohne diesen Hinweis sieht das im Log wie
+        # ein echter Syntaxfehler in Claudes Antwort aus, ist es aber nicht -
+        # siehe INCIDENT-artige Verwirrung am 2026-09-08. max_tokens erhoehen
+        # ist der richtige Hebel, nicht die Parsing-Logik reparieren.
+        log.warning(
+            "Claude-Antwort wurde bei max_tokens=%d abgeschnitten (stop_reason=max_tokens) - "
+            "das ist wahrscheinlich die Ursache, falls die Antwort gleich als ungueltiges JSON scheitert.",
+            max_tokens,
+        )
     return "".join(block.text for block in response.content if block.type == "text")
