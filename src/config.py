@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 @dataclass(frozen=True)
 class RiskConfig:
     max_position_size_pct_of_portfolio: float
-    max_trade_notional_pct_of_cash: float
+    max_trade_notional_pct_of_nav: float
     daily_loss_stop_pct: float
     max_trades_per_symbol_per_day: int
     allow_short: bool

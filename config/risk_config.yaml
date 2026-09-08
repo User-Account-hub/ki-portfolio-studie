@@ -8,9 +8,12 @@
 # des Trades) am gesamten Portfolio-NAV.
 max_position_size_pct_of_portfolio: 0.10
 
-# Max. Volumen (Notional) eines einzelnen Trades als Anteil des
-# aktuell verfügbaren Cash.
-max_trade_notional_pct_of_cash: 0.05
+# Max. Volumen (Notional) eines einzelnen Trades als Anteil des NAV zu
+# Laufbeginn (fixe Bezugsgrösse fuer den ganzen Lauf, konsistent mit den
+# Kap.-6.8-Guardrails unten) - NICHT des sich laufend aendernden Cash, das
+# mit jedem ausgefuehrten Buy schrumpfen wuerde und das Limit sonst von
+# Order zu Order verschaerft haette.
+max_trade_notional_pct_of_nav: 0.05
 
 # Verlustgrenze seit dem Start des aktuellen Pipeline-Laufs
 # ("Tagesverlust" im Sinne des Runs, nicht des Kalendertags, da der Cron

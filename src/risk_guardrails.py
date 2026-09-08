@@ -141,14 +141,22 @@ def check_no_margin(order: ProposedOrder, ctx: PortfolioContext, price: float, a
 
 
 def check_trade_notional(
-    order: ProposedOrder, ctx: PortfolioContext, price: float, max_pct_of_cash: float
+    order: ProposedOrder, ctx: PortfolioContext, price: float, max_pct_of_nav: float
 ) -> RiskCheckResult:
+    """Kap. 6.8: max. Trade-Notional als Anteil des NAV zu Laufbeginn
+    (ctx.start_of_run_nav), NICHT des aktuellen Cash. Cash schrumpft mit
+    jedem ausgeführten Buy innerhalb desselben Laufs - würde man dagegen
+    prüfen, würde sich das Limit von Order zu Order verschärfen, obwohl die
+    Konfiguration eine feste Grösse vorsieht. Fällt auf ctx.nav zurück, falls
+    start_of_run_nav nicht gesetzt ist (z.B. in Tests ohne vollen Kontext).
+    """
     notional = order_notional(order, price)
-    limit = ctx.cash * max_pct_of_cash
+    reference_nav = ctx.start_of_run_nav if ctx.start_of_run_nav is not None else ctx.nav
+    limit = reference_nav * max_pct_of_nav
     if notional > limit:
         return RiskCheckResult.reject(
             f"Trade-Notional {notional:.2f} übersteigt Limit von "
-            f"{max_pct_of_cash:.0%} des Cash ({limit:.2f})."
+            f"{max_pct_of_nav:.0%} des NAV zu Laufbeginn ({limit:.2f})."
         )
     return RiskCheckResult.ok()
 
@@ -412,7 +420,7 @@ def evaluate_order(
         else RiskCheckResult.ok(),
         check_max_trades_per_symbol(order, ctx, config.max_trades_per_symbol_per_day),
         check_no_margin(order, ctx, price, config.allow_margin),
-        check_trade_notional(order, ctx, price, config.max_trade_notional_pct_of_cash),
+        check_trade_notional(order, ctx, price, config.max_trade_notional_pct_of_nav),
         check_position_size(order, ctx, price, config.max_position_size_pct_of_portfolio),
         check_structured_products_cap(
             order, ctx, price, current_prices, config.structured_products_max_notional_pct_of_nav

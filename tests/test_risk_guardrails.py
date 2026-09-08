@@ -25,7 +25,7 @@ from src.risk_guardrails import (
 def make_config(**overrides) -> RiskConfig:
     defaults = dict(
         max_position_size_pct_of_portfolio=0.10,
-        max_trade_notional_pct_of_cash=0.05,
+        max_trade_notional_pct_of_nav=0.05,
         daily_loss_stop_pct=-0.03,
         max_trades_per_symbol_per_day=1,
         allow_short=True,
@@ -107,16 +107,36 @@ def test_margin_allowed_when_config_permits():
 
 def test_trade_notional_within_limit():
     order = make_order(quantity=10)  # notional 1500 at price 150
-    ctx = make_ctx(cash=100_000.0)
-    result = check_trade_notional(order, ctx, price=150.0, max_pct_of_cash=0.05)
+    ctx = make_ctx(start_of_run_nav=100_000.0)
+    result = check_trade_notional(order, ctx, price=150.0, max_pct_of_nav=0.05)
     assert result.approved
 
 
 def test_trade_notional_exceeds_limit():
-    order = make_order(quantity=1000)  # notional 150_000, cash limit 5% of 100k = 5000
-    ctx = make_ctx(cash=100_000.0)
-    result = check_trade_notional(order, ctx, price=150.0, max_pct_of_cash=0.05)
+    order = make_order(quantity=1000)  # notional 150_000, NAV-Limit 5% von 100k = 5000
+    ctx = make_ctx(start_of_run_nav=100_000.0)
+    result = check_trade_notional(order, ctx, price=150.0, max_pct_of_nav=0.05)
     assert not result.approved
+
+
+def test_trade_notional_uses_fixed_start_of_run_nav_not_shrinking_cash():
+    """Kap. 6.8: das Limit ist eine feste Groesse fuer den ganzen Lauf.
+    Bereits stark geschrumpftes Cash (z.B. nach mehreren Buys in diesem
+    Lauf) darf das Limit NICHT verschaerfen - massgeblich bleibt
+    start_of_run_nav, nicht das aktuelle Cash."""
+    order = make_order(quantity=10)  # notional 1500 at price 150
+    ctx = make_ctx(cash=1_000.0, nav=100_000.0, start_of_run_nav=100_000.0)
+    # Mit der alten cash-basierten Logik waere das Limit 5% von 1_000 = 50
+    # gewesen - die Order (1500) waere faelschlich abgelehnt worden.
+    result = check_trade_notional(order, ctx, price=150.0, max_pct_of_nav=0.05)
+    assert result.approved
+
+
+def test_trade_notional_falls_back_to_nav_without_start_of_run_nav():
+    order = make_order(quantity=10)  # notional 1500 at price 150
+    ctx = make_ctx(nav=100_000.0, start_of_run_nav=None)
+    result = check_trade_notional(order, ctx, price=150.0, max_pct_of_nav=0.05)
+    assert result.approved
 
 
 # --- position size cap --------------------------------------------------------
@@ -469,7 +489,7 @@ def test_evaluate_order_rejects_when_segment_weight_exceeded():
     check_segment_weight durch. Andere Notional-/Konzentrationslimiten werden
     grosszügig überschrieben, um gezielt nur die Segment-Regel zu prüfen."""
     config = make_config(
-        max_trade_notional_pct_of_cash=1.0,
+        max_trade_notional_pct_of_nav=1.0,
         max_position_size_pct_of_portfolio=1.0,
         max_top3_concentration_pct_of_nav=1.0,
     )

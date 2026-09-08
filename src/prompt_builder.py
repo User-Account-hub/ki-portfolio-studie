@@ -101,7 +101,7 @@ def build_user_prompt(
 
     limits = {
         "max_position_size_pct_of_portfolio": risk_config.max_position_size_pct_of_portfolio,
-        "max_trade_notional_pct_of_cash": risk_config.max_trade_notional_pct_of_cash,
+        "max_trade_notional_pct_of_nav": risk_config.max_trade_notional_pct_of_nav,
         "daily_loss_stop_pct": risk_config.daily_loss_stop_pct,
         "max_trades_per_symbol_per_day": risk_config.max_trades_per_symbol_per_day,
         "structured_products_max_notional_pct_of_nav": risk_config.structured_products_max_notional_pct_of_nav,
