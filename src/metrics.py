@@ -11,9 +11,25 @@ Checkpoint frequency (and therefore the annualization factor used in
 compute_metrics) is driven by `reconstruct_nav_history`'s `freqs` parameter,
 NOT hardcoded - it must match however often the pipeline actually runs (see
 .github/workflows/weekly_pipeline.yml's cron schedule). Two pandas weekly
-offset aliases, one per run day (default: Monday + Thursday), currently
-give 2 checkpoints/week; adding/removing a run day means updating `freqs`
-here to match, nothing else in this module.
+offset aliases, one per run day (default: Monday + Thursday), give 2
+checkpoints/week for Phase 1; adding/removing a run day means updating
+`freqs` here to match, nothing else in this module.
+
+Regimewechsel Phase 1 -> Phase 2 (Thesis Kap. 6.3/11.2/15): ab `PHASE2_START`
+(2026-09-10) laeuft die Studie mit taeglichem Handel (Mo-Fr) statt 2x/Woche.
+`reconstruct_nav_history` erzeugt deshalb fuer Zeitpunkte vor `PHASE2_START`
+weiterhin Mo/Do-Checkpoints (`freqs`) und ab `PHASE2_START` werktaegliche
+Checkpoints. `compute_metrics` haelt Vol/Sharpe strikt getrennt: eine Rendite
+zaehlt nur dann als Phase-2-Rendite (Annualisierung mit
+`PHASE2_PERIODS_PER_YEAR` = 252), wenn auch ihr INTERVALL-START bereits auf
+oder nach `PHASE2_START` liegt - sonst wuerde eine ~3.5-Tage-Phase-1-Rendite
+mit einer 1-Tages-Phase-2-Rendite in derselben Standardabweichung vermischt
+und mit dem falschen Faktor annualisiert. Solange nicht genug reine
+Phase-2-Renditen vorliegen (< 2), faellt die Berechnung auf die alte
+Phase-1-Annualisierung (`NavHistory.periods_per_year`) ueber die komplette
+Historie zurueck. total_return/max_drawdown sind von alldem nicht betroffen,
+da sie nur Anfang/Ende bzw. Peak/Tal vergleichen, unabhaengig vom
+Checkpoint-Abstand.
 """
 from __future__ import annotations
 
@@ -30,6 +46,12 @@ from src.risk_guardrails import OpenPosition, compute_nav
 CASH_SIGN = {"buy": -1, "sell": 1, "short": 1, "cover": -1}
 OPEN_SIDES = {"buy": "long", "short": "short"}
 CLOSE_SIDES = {"sell": "long", "cover": "short"}
+
+# Regimewechsel Phase 1 (2x/Woche) -> Phase 2 (taeglich, Mo-Fr), siehe Thesis
+# Kap. 6.3/11.2/15. Wie `freqs` unten kein Config-Wert, sondern bewusst hier
+# hart kodiert, direkt neben dem Code, der ihn auswertet.
+PHASE2_START = pd.Timestamp("2026-09-10")
+PHASE2_PERIODS_PER_YEAR = 252.0
 
 
 @dataclass(frozen=True)
@@ -110,11 +132,19 @@ def reconstruct_nav_history(
     watchlist_underlyings: dict[str, str],
     benchmark_symbol: str,
     freqs: tuple[str, ...] = ("W-MON", "W-THU"),
+    phase2_start: pd.Timestamp = PHASE2_START,
 ) -> NavHistory:
     """`freqs` are pandas weekly offset aliases, one per weekday the pipeline
-    runs (default: Monday + Thursday, matching the current cron schedule -
-    see module docstring). periods_per_year is derived as 52 * len(freqs),
-    since each alias contributes one checkpoint per week."""
+    ran during Phase 1 (Monday + Thursday, matching the pre-2026-09-10 cron
+    schedule - see module docstring). periods_per_year is derived as
+    52 * len(freqs), since each alias contributes one checkpoint per week -
+    this remains the Phase-1-only annualization factor stored on NavHistory;
+    compute_metrics switches to PHASE2_PERIODS_PER_YEAR once enough
+    Phase-2-only returns exist.
+
+    Checkpoints before `phase2_start` follow `freqs` (Phase 1, 2x/week);
+    checkpoints from `phase2_start` onward are every business day (Phase 2,
+    daily), reflecting the Kap.-6.3 regime change to daily trading."""
     initial_cash = portfolio_row["initial_cash_balance"]
     periods_per_year = 52 * len(freqs)
 
@@ -129,9 +159,16 @@ def reconstruct_nav_history(
     snapshots = _replay_ledger(trades, initial_cash)
     start = snapshots[0]["timestamp"].normalize()
     end = pd.Timestamp.today().normalize()
-    checkpoints = pd.DatetimeIndex(
-        sorted({ts for freq in freqs for ts in pd.date_range(start=start, end=end, freq=freq)})
-    )
+
+    phase1_end = min(end, phase2_start)
+    phase1_checkpoints = {ts for freq in freqs for ts in pd.date_range(start=start, end=phase1_end, freq=freq)}
+    if end > phase2_start:
+        phase2_checkpoints = set(
+            pd.date_range(start=max(start, phase2_start + pd.Timedelta(days=1)), end=end, freq="B")
+        )
+    else:
+        phase2_checkpoints = set()
+    checkpoints = pd.DatetimeIndex(sorted(phase1_checkpoints | phase2_checkpoints))
     if len(checkpoints) == 0 or checkpoints[-1] < end:
         checkpoints = checkpoints.append(pd.DatetimeIndex([end]))
 
@@ -184,7 +221,11 @@ def reconstruct_nav_history(
     )
 
 
-def compute_metrics(nav_history: NavHistory, risk_free_rate_annual: float = 0.0) -> MetricsResult:
+def compute_metrics(
+    nav_history: NavHistory,
+    risk_free_rate_annual: float = 0.0,
+    phase2_start: pd.Timestamp = PHASE2_START,
+) -> MetricsResult:
     nav = pd.Series(nav_history.nav, index=nav_history.dates)
     benchmark = pd.Series(nav_history.benchmark_normalized, index=nav_history.dates)
     returns = nav.pct_change().dropna()
@@ -192,11 +233,26 @@ def compute_metrics(nav_history: NavHistory, risk_free_rate_annual: float = 0.0)
     total_return = nav.iloc[-1] / nav.iloc[0] - 1
     last_period_return = float(returns.iloc[-1]) if not returns.empty else None
 
-    periods_per_year = nav_history.periods_per_year
-    if len(returns) >= 2 and returns.std() > 0:
+    # Eine Rendite zaehlt nur als Phase-2-Rendite, wenn auch ihr Intervall-
+    # Start >= phase2_start liegt - sonst waere es ein Phase-1->Phase-2-
+    # Uebergangsintervall mit fremder Frequenz. `interval_start_dates` sind
+    # positional (nicht per Label) an `returns` ausgerichtet, da beide gleich
+    # lang und gleich sortiert aus derselben `nav`-Serie stammen.
+    interval_start_dates = nav.index[:-1]
+    is_phase2_return = interval_start_dates >= phase2_start
+    phase2_returns = returns[is_phase2_return]
+
+    if len(phase2_returns) >= 2 and phase2_returns.std() > 0:
+        periods_per_year = PHASE2_PERIODS_PER_YEAR
+        vol_returns = phase2_returns
+    else:
+        periods_per_year = nav_history.periods_per_year
+        vol_returns = returns
+
+    if len(vol_returns) >= 2 and vol_returns.std() > 0:
         rf_per_period = risk_free_rate_annual / periods_per_year
-        annualized_vol = float(returns.std() * np.sqrt(periods_per_year))
-        sharpe = float((returns.mean() - rf_per_period) / returns.std() * np.sqrt(periods_per_year))
+        annualized_vol = float(vol_returns.std() * np.sqrt(periods_per_year))
+        sharpe = float((vol_returns.mean() - rf_per_period) / vol_returns.std() * np.sqrt(periods_per_year))
     else:
         annualized_vol = None
         sharpe = None

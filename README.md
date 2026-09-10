@@ -82,11 +82,18 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   rekonstruiert den Verlauf für Report/Sharpe/Max-Drawdown weiterhin durch
   Replay der `trades`-Tabelle plus historischen Kursen (yfinance), nicht über
   eine gespeicherte Kurve. Die Checkpoint-Frequenz (`reconstruct_nav_history`,
-  Parameter `freqs`, aktuell Montag+Donnerstag) und die daraus abgeleitete
+  Parameter `freqs`, Montag+Donnerstag) und die daraus abgeleitete
   Annualisierung (`periods_per_year`) folgen dem tatsächlichen Cron-Rhythmus
-  und müssen bei einer erneuten Frequenzänderung mit angepasst werden. Das
-  Ganze ist eine Näherung (Kursbewegungen zwischen Checkpoints auf bereits
-  geschlossenen Positionen fehlen), für diese Fallstudie aber ausreichend.
+  und müssen bei einer erneuten Frequenzänderung mit angepasst werden. Seit
+  dem Regimewechsel auf täglichen Handel am 2026-09-10 (Thesis Kap.
+  6.3/11.2/15, Phase 1 → Phase 2) gilt das nur noch für Zeitpunkte vor
+  `PHASE2_START`; ab dort erzeugt `reconstruct_nav_history` tägliche
+  (werktägliche) Checkpoints, und `compute_metrics` annualisiert Vol/Sharpe
+  mit `PHASE2_PERIODS_PER_YEAR` (252) - strikt getrennt von den älteren
+  Phase-1-Renditen, um keine unterschiedlichen Checkpoint-Frequenzen in
+  derselben Standardabweichung zu vermischen. Das Ganze ist eine Näherung
+  (Kursbewegungen zwischen Checkpoints auf bereits geschlossenen Positionen
+  fehlen), für diese Fallstudie aber ausreichend.
 - **`nav_history`-Tabelle (5. Tabelle, seit Kap.-6.8-Guardrails):** eng
   zweckgebunden - pro Pipeline-Lauf genau ein Eintrag mit dem NAV zu
   Lauf-Beginn. Einziger Zweck: `risk_guardrails.check_circuit_breaker` einen
@@ -169,23 +176,32 @@ python -m src.pipeline
 
 Ein Report landet in `reports/report_<timestamp>.md`.
 
-## GitHub Actions: zweimal wöchentlicher Lauf
+## GitHub Actions: täglicher Lauf (seit Regimewechsel 2026-09-10)
 
-Der Workflow `.github/workflows/weekly_pipeline.yml` läuft jeden **Montag und
-Donnerstag** um 15:00 UTC (und ist manuell über "Run workflow" auslösbar) -
-bewusst innerhalb der regulären NYSE-Handelszeit (9:30-16:00 ET), unabhängig
-von der US-Sommerzeit. Die ursprüngliche Zeit (07:00 UTC) lag ganzjährig vor
-Börsenöffnung, wodurch Market-Orders nie füllen konnten (Alpaca queued sie
-bestenfalls für die nächste Session) - kein Code-Bug, sondern ein falsch
-getimter Trigger.
+Der Workflow `.github/workflows/weekly_pipeline.yml` läuft **werktäglich
+(Montag-Freitag)** um 15:00 UTC (und ist manuell über "Run workflow"
+auslösbar) - bewusst innerhalb der regulären NYSE-Handelszeit (9:30-16:00 ET),
+unabhängig von der US-Sommerzeit. Die ursprüngliche Zeit (07:00 UTC) lag
+ganzjährig vor Börsenöffnung, wodurch Market-Orders nie füllen konnten
+(Alpaca queued sie bestenfalls für die nächste Session) - kein Code-Bug,
+sondern ein falsch getimter Trigger.
 
-Bei einer weiteren Änderung des Rhythmus (Wochentage oder Häufigkeit) muss
-`src/metrics.py`s `reconstruct_nav_history(freqs=...)` entsprechend angepasst
-werden - sonst driftet die daraus abgeleitete Annualisierung (Volatilität,
-Sharpe Ratio) von der tatsächlichen Lauf-Frequenz weg. Der Dateiname
-`weekly_pipeline.yml` (und der interne `chore: weekly pipeline run`-Commit-
-Präfix) blieb aus Kompatibilität unverändert - **"weekly" im Namen ist
-historisch, nicht mehr wörtlich zu nehmen.**
+Cadence-Historie: 1x/Woche (bis 2026-09-07) → 2x/Woche, Montag+Donnerstag
+(2026-09-08 bis 2026-09-10) → täglich, Mo-Fr (ab 2026-09-10, Regimewechsel
+Phase 1 → Phase 2 laut Thesis Kap. 6.3/11.2/15). `src/metrics.py` bildet
+diesen Wechsel als Phasengrenze ab (`PHASE2_START`, `PHASE2_PERIODS_PER_YEAR`)
+statt den gesamten Verlauf rückwirkend auf eine einzige Frequenz umzustellen
+- vor `PHASE2_START` gelten weiterhin Mo/Do-Checkpoints, ab dort tägliche.
+
+Bei einer weiteren Änderung des Rhythmus (Wochentage oder Häufigkeit) müssen
+sowohl dieser Cron als auch `src/metrics.py`s `reconstruct_nav_history` (neue
+`freqs`/`phase2_start`-Logik) und `compute_metrics`s
+`PHASE2_PERIODS_PER_YEAR` entsprechend angepasst werden - sonst driftet die
+daraus abgeleitete Annualisierung (Volatilität, Sharpe Ratio) von der
+tatsächlichen Lauf-Frequenz weg. Der Dateiname `weekly_pipeline.yml` (und der
+interne `chore: weekly pipeline run`-Commit-Präfix) blieb aus Kompatibilität
+unverändert - **"weekly" im Namen ist historisch, nicht mehr wörtlich zu
+nehmen.**
 
 **Secrets** (Repo-Settings → Secrets and variables → Actions → *Secrets*):
 

@@ -16,13 +16,18 @@ on:
     # als "nicht ausgefuehrt" uebersprungen wurden - kein Bug im Code, sondern
     # falsch getimter Trigger.
     #
-    # Seit 2026-09-08: zweimal woechentlich statt einmal (Montag + Donnerstag),
-    # jeweils 15:00 UTC. src/metrics.py rekonstruiert den NAV-
-    # Verlauf entsprechend auf Mo+Do-Checkpoints (siehe reconstruct_nav_history
-    # `freqs`-Parameter) statt nur woechentlich - beide Stellen muessen bei einer
-    # weiteren Frequenzaenderung zusammen angepasst werden.
-    - cron: "0 15 * * 1"
-    - cron: "0 15 * * 4"
+    # 2026-09-08 bis 2026-09-10: zweimal woechentlich (Montag + Donnerstag),
+    # jeweils 15:00 UTC.
+    #
+    # Seit 2026-09-10: Regimewechsel auf taeglichen Handel (Mo-Fr), siehe
+    # Thesis Kap. 6.3/11.2/15 (Phase 1 -> Phase 2). src/metrics.py
+    # rekonstruiert den NAV-Verlauf entsprechend phasenabhaengig: vor
+    # PHASE2_START weiterhin Mo/Do-Checkpoints, ab PHASE2_START taeglich
+    # (siehe reconstruct_nav_history's `phase2_start`-Parameter und
+    # compute_metrics' PHASE2_PERIODS_PER_YEAR) - beide Stellen (Cron hier und
+    # PHASE2_START/`freqs` in src/metrics.py) muessen bei einer weiteren
+    # Frequenzaenderung zusammen angepasst werden.
+    - cron: "0 15 * * 1-5"
   workflow_dispatch: {}
 
 permissions:
