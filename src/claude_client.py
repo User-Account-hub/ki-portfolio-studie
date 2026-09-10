@@ -27,21 +27,30 @@ def get_trading_decision(
     sampling behaviour instead.
 
     v3 (2026-09-10, Thesis Kap. 6.2): Extended Thinking explicit gemacht
-    (`thinking={"type": "adaptive"}` + `output_config={"effort": "medium"}`).
+    (`thinking={"type": "adaptive"}` + `output_config={"effort": ...}`).
     claude-sonnet-5 laeuft Extended Thinking bereits standardmaessig, wenn
     `thinking` weggelassen wird - dieser Wechsel macht es nur explizit/
-    dokumentiert und daempft die Denktiefe auf "medium" (statt des impliziten
-    Default "high"), analog zu einem massvollen statt maximalen Budget.
-    `budget_tokens` (fester Token-Betrag) existiert fuer dieses Modell NICHT
-    mehr - die aktuelle SDK/Modellversion lehnt
+    dokumentiert. `budget_tokens` (fester Token-Betrag) existiert fuer dieses
+    Modell NICHT mehr - die aktuelle SDK/Modellversion lehnt
     `thinking={"type": "enabled", "budget_tokens": N}` mit HTTP 400 ab (das
     war ein Pre-4.6-Mechanismus fuer aeltere Modelle). Denk-Tokens werden
     stattdessen ueber `effort` gesteuert und zaehlen in DASSELBE `max_tokens`
     hinein statt zusaetzlich dazu - `max_tokens` ist ein harter Deckel ueber
-    die gesamte Antwort (Denken + Text). Bei effort="medium" bleibt genug
-    Spielraum unter den aktuellen 16000 fuer die JSON-Order-Antwort; die
-    stop_reason=="max_tokens"-Warnung unten bleibt trotzdem die massgebliche
-    Absicherung, falls sich das aendert.
+    die gesamte Antwort (Denken + Text). Die stop_reason=="max_tokens"-
+    Warnung unten bleibt die massgebliche Absicherung, falls das Budget mal
+    nicht reicht.
+
+    v4 (2026-09-10, Thesis Kap. 6.2): `effort` von "medium" (v3) auf "max"
+    erhoeht - reine Effort-Aenderung, `thinking={"type": "adaptive"}"` bleibt
+    unveraendert (weiterhin der einzige "on"-Modus fuer claude-sonnet-5,
+    unabhaengig vom effort-Wert). "max" laesst dem Modell deutlich mehr
+    Denk-Tokens als "medium" - das erhoeht das Risiko, dass die Denk- +
+    Text-Tokens zusammen die aktuellen 16000 max_tokens ausschoepfen, bevor
+    die JSON-Order-Antwort fertig ist. Kein automatisches Gegenmittel hier
+    eingebaut (max_tokens bewusst unveraendert gelassen, siehe Thesis-
+    Vorgabe) - die stop_reason=="max_tokens"-Warnung faengt das ab, sollte es
+    eintreten; falls Truncations haeufiger auftreten, ist Erhoehen von
+    max_tokens der richtige Hebel (siehe Kommentar im if-Block unten).
     """
     # TEMP DEBUG (see task: httpcore.LocalProtocolError persists after strip()).
     # Never print the key itself - only length/whitespace metadata - so this
@@ -64,7 +73,7 @@ def get_trading_decision(
         max_tokens=max_tokens,
         system=system_prompt,
         thinking={"type": "adaptive"},
-        output_config={"effort": "medium"},
+        output_config={"effort": "max"},
         messages=[{"role": "user", "content": user_prompt}],
     )
     if response.stop_reason == "max_tokens":

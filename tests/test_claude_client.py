@@ -1,5 +1,5 @@
 """Tests for src/claude_client.py's max_tokens-truncation detection and
-Extended Thinking configuration (v3, Thesis Kap. 6.2).
+Extended Thinking configuration (v3/v4, Thesis Kap. 6.2).
 
 Monkeypatches anthropic.Anthropic so these run without any network call.
 """
@@ -57,11 +57,11 @@ def test_warns_when_truncated_at_max_tokens(monkeypatch, caplog):
     assert any("abgeschnitten" in r.message and "16000" in r.message for r in caplog.records)
 
 
-def test_extended_thinking_is_enabled_with_moderate_effort(monkeypatch):
-    """v3 (Thesis Kap. 6.2): Extended Thinking muss aktiv sein
-    (`thinking={"type": "adaptive"}`), mit gedaempftem statt maximalem
-    Budget (`output_config={"effort": "medium"}"), NICHT ueber das fuer
-    claude-sonnet-5 nicht mehr existierende `budget_tokens`."""
+def test_extended_thinking_is_enabled_with_max_effort(monkeypatch):
+    """v3+v4 (Thesis Kap. 6.2): Extended Thinking muss aktiv sein
+    (`thinking={"type": "adaptive"}`), mit effort="max" (v4 - abgeloest von
+    v3s "medium"), NICHT ueber das fuer claude-sonnet-5 nicht mehr
+    existierende `budget_tokens`."""
     FakeAnthropicClient.next_response = make_response('{"orders": []}', "end_turn")
     monkeypatch.setattr(claude_client.anthropic, "Anthropic", FakeAnthropicClient)
 
@@ -69,7 +69,7 @@ def test_extended_thinking_is_enabled_with_moderate_effort(monkeypatch):
 
     sent_kwargs = FakeAnthropicClient.last_messages.last_kwargs
     assert sent_kwargs["thinking"] == {"type": "adaptive"}
-    assert sent_kwargs["output_config"] == {"effort": "medium"}
+    assert sent_kwargs["output_config"] == {"effort": "max"}
     assert "budget_tokens" not in sent_kwargs.get("thinking", {})
 
 
