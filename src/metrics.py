@@ -28,10 +28,13 @@ und mit dem falschen Faktor annualisiert. Solange nicht genug reine
 Phase-2-Renditen vorliegen (< 2), faellt die Berechnung auf die alte
 Phase-1-Annualisierung (`NavHistory.periods_per_year`) ueber die komplette
 Historie zurueck. Vol/Sharpe sind die einzigen Kennzahlen, die von der
-Checkpoint-Dichte/-Einteilung abhaengen: total_return vergleicht `nav[-1]`
-gegen das feste `NavHistory.initial_nav` (Studien-Startkapital, siehe dortiger
-Kommentar - NICHT `nav[0]`) und max_drawdown gegen das laufende Peak/Tal
-innerhalb der Zeitreihe, beides unabhaengig vom Checkpoint-Abstand.
+Checkpoint-Dichte/-Einteilung abhaengen. total_return, max_drawdown und
+benchmark_total_return/alpha_pct sind bewusst auf feste, laufunabhaengige
+Referenzwerte geankert statt auf `nav[0]`/`dates[0]` (den ersten Checkpoint
+DIESES Laufs) - siehe die jeweiligen Bugfix-Kommentare 2026-09-12 bei
+`NavHistory.initial_nav`, `NavHistory.historical_peak_nav` und in
+`compute_metrics` fuer die Details, warum `nav[0]`/`dates[0]` dafuer die
+falsche Referenz waren.
 """
 from __future__ import annotations
 
@@ -43,6 +46,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from src.db import get_peak_nav
 from src.risk_guardrails import OpenPosition, compute_nav
 
 CASH_SIGN = {"buy": -1, "sell": 1, "short": 1, "cover": -1}
@@ -75,6 +79,14 @@ class NavHistory:
     # die Rendite seit dem letzten Checkpoint (was `last_period_return_pct`
     # ohnehin schon abdeckt).
     initial_nav: float
+    # Bugfix 2026-09-12 (Teil 2, analog zu initial_nav): der WIRKLICH bekannte
+    # historische NAV-Hoechststand (siehe db.get_peak_nav/
+    # risk_guardrails.check_circuit_breaker, Kap. 6.8), NICHT nur das Maximum
+    # ueber die lokalen Checkpoints dieses Laufs. compute_metrics' max_drawdown
+    # muss `running_max` hierauf floor-en - sonst bleibt ein Drawdown, der VOR
+    # dem ersten lokalen Checkpoint bereits stattfand (z.B. zwischen
+    # Studienbeginn und dem ersten Checkpoint), unsichtbar.
+    historical_peak_nav: float
 
 
 @dataclass(frozen=True)
@@ -160,6 +172,11 @@ def reconstruct_nav_history(
     daily), reflecting the Kap.-6.3 regime change to daily trading."""
     initial_cash = portfolio_row["initial_cash_balance"]
     periods_per_year = 52 * len(freqs)
+    # `conn` wird hier (bisher ungenutzt) fuer genau diesen Zweck gebraucht:
+    # der Circuit-Breaker (risk_guardrails.py, Kap. 6.8) pflegt bereits den
+    # wahren historischen NAV-Hoechststand ueber alle Laeufe hinweg - den
+    # wiederverwenden wir fuer max_drawdown, statt ihn separat zu bestimmen.
+    historical_peak_nav = max(initial_cash, get_peak_nav(conn, portfolio_row["id"]) or initial_cash)
 
     if not trades:
         return NavHistory(
@@ -168,6 +185,7 @@ def reconstruct_nav_history(
             benchmark_normalized=[initial_cash],
             periods_per_year=periods_per_year,
             initial_nav=initial_cash,
+            historical_peak_nav=historical_peak_nav,
         )
 
     snapshots = _replay_ledger(trades, initial_cash)
@@ -221,7 +239,14 @@ def reconstruct_nav_history(
         nav_values.append(nav)
         dates.append(checkpoint)
 
-    benchmark_start_price = price_on(benchmark_symbol, dates[0])
+    # Bugfix 2026-09-12 (Teil 3): Anker war `dates[0]` - der erste Checkpoint
+    # DIESES Laufs, nicht der echte Studienbeginn. Zusammen mit compute_metrics'
+    # `benchmark_total_return` (das ebenfalls gegen `initial_nav` statt gegen
+    # `benchmark[0]` rechnet) sorgt der falsche Anker sonst dafuer, dass sich
+    # das Vergleichsfenster fuer die Benchmark von Lauf zu Lauf verschiebt -
+    # und seit dem total_return-Fix (Teil 1) waeren total_return und
+    # benchmark_total_return sonst inkonsistent geankert, was alpha_pct verzerrt.
+    benchmark_start_price = price_on(benchmark_symbol, start)
     benchmark_normalized = []
     for d in dates:
         price = price_on(benchmark_symbol, d)
@@ -236,6 +261,7 @@ def reconstruct_nav_history(
         benchmark_normalized=benchmark_normalized,
         periods_per_year=periods_per_year,
         initial_nav=initial_cash,
+        historical_peak_nav=historical_peak_nav,
     )
 
 
@@ -283,11 +309,29 @@ def compute_metrics(
         annualized_vol = None
         sharpe = None
 
-    running_max = nav.cummax()
+    # Bugfix 2026-09-12 (Teil 2): `nav.cummax()` allein kennt nur die lokalen
+    # Checkpoints DIESES Laufs - ein Peak, der davor lag (z.B. das
+    # Startkapital selbst oder ein Zwischenhoch kurz nach den ersten Trades),
+    # faellt sonst unter den Tisch und ein bereits eingetretener Drawdown
+    # zeigt sich faelschlich als 0%. `historical_peak_nav` (siehe NavHistory)
+    # ist ein Floor: cummax bleibt massgeblich, sobald die lokale Serie den
+    # bekannten historischen Peak selbst uebertrifft.
+    running_max = nav.cummax().clip(lower=nav_history.historical_peak_nav)
     drawdown = (nav - running_max) / running_max
     max_drawdown = float(drawdown.min())
 
-    benchmark_total_return = float(benchmark.iloc[-1] / benchmark.iloc[0] - 1)
+    # Bugfix 2026-09-12 (Teil 3): vorher `benchmark.iloc[-1] / benchmark.iloc[0] - 1`
+    # - `benchmark.iloc[0]` ist per Konstruktion IMMER `initial_nav` am jeweils
+    # gewaehlten Anker-Datum (siehe reconstruct_nav_history), unabhaengig davon
+    # welches Datum das ist. Dadurch kuerzte sich der (falsche) Anker `dates[0]`
+    # aus dieser Ratio komplett heraus, und selbst nachdem der Anker in
+    # reconstruct_nav_history auf den echten Studienbeginn (`start`) korrigiert
+    # wurde, haette diese Formel weiterhin nur die Rendite seit `dates[0]`
+    # gemessen. Divisor muss `initial_nav` (fixer Dollarbetrag) sein, nicht
+    # `benchmark.iloc[0]` - erst das macht total_return und
+    # benchmark_total_return konsistent vergleichbar (und damit alpha_pct
+    # aussagekraeftig).
+    benchmark_total_return = float(benchmark.iloc[-1] / nav_history.initial_nav - 1)
 
     return MetricsResult(
         current_nav=float(nav.iloc[-1]),
