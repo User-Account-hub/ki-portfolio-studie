@@ -1,5 +1,5 @@
 """Tests for src/claude_client.py's max_tokens-truncation detection and
-Extended Thinking configuration (v3/v4/v5, Thesis Kap. 6.2).
+Extended Thinking configuration (v3/v4/v5/v6, Thesis Kap. 6.2).
 
 Monkeypatches anthropic.Anthropic so these run without any network call.
 """
@@ -8,17 +8,51 @@ from __future__ import annotations
 import logging
 from types import SimpleNamespace
 
+import anthropic
+import pytest
+
 import src.claude_client as claude_client
+
+
+class FakeMessageStream:
+    """Stand-in for the `MessageStreamManager`/`MessageStream` pair that
+    `client.messages.stream()` returns - just enough of the context-manager
+    + `get_final_message()` protocol for claude_client.py's v6 usage."""
+
+    def __init__(self, response):
+        self._response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def get_final_message(self):
+        return self._response
 
 
 class FakeMessages:
     def __init__(self, response):
         self._response = response
         self.last_kwargs = None
+        self.create_calls = 0
+        self.stream_calls = 0
 
     def create(self, **kwargs):
+        # Bewusst weiterhin vorhanden (nicht entfernt) statt zu raisen: falls
+        # ein zukuenftiger Code-Pfad hierauf zurueckfaellt, soll das ueber
+        # create_calls sichtbar werden (siehe
+        # test_uses_streaming_not_create_to_avoid_10_minute_timeout_guard),
+        # nicht stillschweigend durchlaufen.
+        self.create_calls += 1
         self.last_kwargs = kwargs
         return self._response
+
+    def stream(self, **kwargs):
+        self.stream_calls += 1
+        self.last_kwargs = kwargs
+        return FakeMessageStream(self._response)
 
 
 class FakeAnthropicClient:
@@ -98,6 +132,33 @@ def test_default_max_tokens_gives_headroom_after_max_tokens_incident(monkeypatch
     sent_kwargs = FakeAnthropicClient.last_messages.last_kwargs
     assert sent_kwargs["max_tokens"] == 24000 > 16000
     assert sent_kwargs["output_config"] == {"effort": "high"}
+
+
+def test_uses_streaming_not_create_to_avoid_10_minute_timeout_guard(monkeypatch):
+    """v6 (2026-09-12, bestaetigter Produktionsfehler): reproduziert erst die
+    Ursache direkt gegen die echte SDK-Methode, dann prueft es den Fix.
+
+    Ursache: `client.messages.create()` (synchron) berechnet intern ueber
+    `_calculate_nonstreaming_timeout` eine Worst-Case-Dauer rein aus
+    `max_tokens` (3600s * max_tokens / 128000) und verweigert den Call per
+    ValueError, wenn das > 600s (10 Min) ergibt - bei max_tokens=24000 (v5)
+    sind das 675s, bei den vorherigen 16000 nur 450s. Das haengt NICHT von
+    `effort` ab, nur von `max_tokens`.
+
+    Fix: `.stream()` hat diesen Guard nicht (nur `create()`), ist also fuer
+    lange Anfragen zulaessig, ohne effort/max_tokens zurueckzudrehen."""
+    real_client = anthropic.Anthropic(api_key="x")
+    with pytest.raises(ValueError, match="Streaming is required"):
+        real_client._calculate_nonstreaming_timeout(24000, None)
+
+    FakeAnthropicClient.next_response = make_response('{"orders": []}', "end_turn")
+    monkeypatch.setattr(claude_client.anthropic, "Anthropic", FakeAnthropicClient)
+
+    result = claude_client.get_trading_decision("system", "user", api_key="x", max_tokens=24000)
+
+    assert result == '{"orders": []}'
+    assert FakeAnthropicClient.last_messages.stream_calls == 1
+    assert FakeAnthropicClient.last_messages.create_calls == 0
 
 
 def test_thinking_blocks_are_excluded_from_the_returned_text(monkeypatch):

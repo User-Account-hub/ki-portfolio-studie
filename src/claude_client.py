@@ -60,6 +60,30 @@ def get_trading_decision(
     Problems, weniger angefordertes Thinking) UND `max_tokens` von 16000 auf
     24000 erhoeht (Sicherheitsmarge, falls "high" bei einem komplexen Prompt
     trotzdem mal knapp wird) - siehe Thesis-Diagnose-Session vom 2026-09-12.
+
+    v6 (2026-09-12, bestaetigter Produktionsfehler, kein Ad-hoc-Wunsch): der
+    Lauf danach brach schon VOR jedem Netzwerk-Call mit
+    `ValueError: Streaming is required for operations that may take longer
+    than 10 minutes` ab. Ursache (im SDK-Quellcode verifiziert,
+    `anthropic._base_client.Anthropic._calculate_nonstreaming_timeout`,
+    installierte Version 1.3.0): bei einem synchronen (nicht-streamenden)
+    `messages.create()`-Call schaetzt das SDK rein aus `max_tokens` eine
+    Worst-Case-Dauer ab (`3600s * max_tokens / 128000`) und verweigert den
+    Call, wenn das ueber 10 Minuten liegt - bei max_tokens=24000 sind das
+    675s (>600s), bei den vorherigen 16000 waren es nur 450s (<600s), daher
+    ist erst der v5-Fix in dieses Limit gelaufen. WICHTIG: diese Schaetzung
+    haengt NUR an `max_tokens`, nicht an `effort` - `effort` fliesst in die
+    SDK-interne Berechnung ueberhaupt nicht ein, auch wenn es materiell fuer
+    die tatsaechliche Dauer mitverantwortlich ist. Gegenmassnahme (statt
+    max_tokens/effort wieder zu reduzieren und damit die v4/v5-Analysequalitaet
+    zu verlieren): `messages.stream()` statt `messages.create()` - dieser Pfad
+    hat in der SDK keinen `_calculate_nonstreaming_timeout`-Check (nur der
+    synchrone `create()`-Pfad hat ihn), ist also fuer beliebig lange
+    Anfragen zulaessig. `stream.get_final_message()` liefert danach dasselbe
+    `Message`-Objekt (gleiche `content`-Blockliste, gleiches `stop_reason`)
+    wie zuvor `client.messages.create(...)` direkt - die Extraktionslogik
+    unten (Text-Bloecke joinen, stop_reason=="max_tokens" pruefen) bleibt
+    unveraendert korrekt.
     """
     # TEMP DEBUG (see task: httpcore.LocalProtocolError persists after strip()).
     # Never print the key itself - only length/whitespace metadata - so this
@@ -77,14 +101,17 @@ def get_trading_decision(
     # "\n" from how the value was pasted into a CI secret store) - the HTTP
     # client rejects header values containing raw newlines outright.
     client = anthropic.Anthropic(api_key=stripped_key)
-    response = client.messages.create(
+    # v6: `.stream()` statt `.create()` - siehe Docstring oben. `max_tokens`
+    # und `effort` bleiben unveraendert (v5), nur der Transportweg aendert sich.
+    with client.messages.stream(
         model=model,
         max_tokens=max_tokens,
         system=system_prompt,
         thinking={"type": "adaptive"},
         output_config={"effort": "high"},
         messages=[{"role": "user", "content": user_prompt}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
     if response.stop_reason == "max_tokens":
         # Antwort wurde hart am Token-Limit abgeschnitten - typischerweise
         # mitten in einem JSON-String/Objekt, was order_schema.py als
