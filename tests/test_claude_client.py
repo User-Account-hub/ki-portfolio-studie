@@ -1,5 +1,5 @@
 """Tests for src/claude_client.py's max_tokens-truncation detection and
-Extended Thinking configuration (v3/v4, Thesis Kap. 6.2).
+Extended Thinking configuration (v3/v4/v5, Thesis Kap. 6.2).
 
 Monkeypatches anthropic.Anthropic so these run without any network call.
 """
@@ -57,10 +57,12 @@ def test_warns_when_truncated_at_max_tokens(monkeypatch, caplog):
     assert any("abgeschnitten" in r.message and "16000" in r.message for r in caplog.records)
 
 
-def test_extended_thinking_is_enabled_with_max_effort(monkeypatch):
-    """v3+v4 (Thesis Kap. 6.2): Extended Thinking muss aktiv sein
-    (`thinking={"type": "adaptive"}`), mit effort="max" (v4 - abgeloest von
-    v3s "medium"), NICHT ueber das fuer claude-sonnet-5 nicht mehr
+def test_extended_thinking_is_enabled_with_high_effort(monkeypatch):
+    """v3+v5 (Thesis Kap. 6.2): Extended Thinking muss aktiv sein
+    (`thinking={"type": "adaptive"}`), mit effort="high" (v5 - zurueckgestuft
+    von v4s "max", nachdem "max" am 2026-09-11 zu einer komplett leeren
+    Antwort fuehrte - siehe die v5-Docstring in claude_client.py und den
+    Regressionstest unten), NICHT ueber das fuer claude-sonnet-5 nicht mehr
     existierende `budget_tokens`."""
     FakeAnthropicClient.next_response = make_response('{"orders": []}', "end_turn")
     monkeypatch.setattr(claude_client.anthropic, "Anthropic", FakeAnthropicClient)
@@ -69,8 +71,33 @@ def test_extended_thinking_is_enabled_with_max_effort(monkeypatch):
 
     sent_kwargs = FakeAnthropicClient.last_messages.last_kwargs
     assert sent_kwargs["thinking"] == {"type": "adaptive"}
-    assert sent_kwargs["output_config"] == {"effort": "max"}
+    assert sent_kwargs["output_config"] == {"effort": "high"}
     assert "budget_tokens" not in sent_kwargs.get("thinking", {})
+
+
+def test_default_max_tokens_gives_headroom_after_max_tokens_incident(monkeypatch):
+    """v5 (2026-09-11): Reproduziert den bestaetigten Produktionsfehler vom
+    2026-09-11 15:14 UTC - bei effort="max" und max_tokens=16000 hatte das
+    Thinking das gesamte Budget aufgebraucht, bevor irgendein Text-Content-
+    Block geschrieben wurde (stop_reason=="max_tokens", raw_response=="" mit
+    0 Zeichen - schlimmer als eine reine Mid-JSON-Truncation). Vor dem Fix
+    (effort="max", max_tokens=16000) war dieses Szenario mit der damaligen
+    Konfiguration reproduzierbar; der Fix stellt zwar keine Garantie gegen
+    jedes Szenario dar, muss aber zumindest den damaligen Default
+    (max_tokens=16000) durch eine hoehere Sicherheitsmarge ersetzt haben."""
+    only_thinking_response = SimpleNamespace(
+        stop_reason="max_tokens",
+        content=[SimpleNamespace(type="thinking", thinking="...")],
+    )
+    FakeAnthropicClient.next_response = only_thinking_response
+    monkeypatch.setattr(claude_client.anthropic, "Anthropic", FakeAnthropicClient)
+
+    result = claude_client.get_trading_decision("system", "user", api_key="x")
+
+    assert result == ""
+    sent_kwargs = FakeAnthropicClient.last_messages.last_kwargs
+    assert sent_kwargs["max_tokens"] == 24000 > 16000
+    assert sent_kwargs["output_config"] == {"effort": "high"}
 
 
 def test_thinking_blocks_are_excluded_from_the_returned_text(monkeypatch):

@@ -8,6 +8,11 @@ skews volatility/Sharpe without anyone noticing.
 Also covers the Phase 1 -> Phase 2 regime change (2026-09-10, Thesis Kap.
 6.3/11.2/15: 2x/Woche -> taeglich) - compute_metrics must not blend Phase-1
 (longer-interval) and Phase-2 (daily) returns into one annualized figure.
+
+And the 2026-09-12 total_return bugfix: total_return_pct must be computed
+against NavHistory.initial_nav (the study's real starting capital), not
+nav[0] (merely the first checkpoint of whichever run reconstructed the
+series) - see test_compute_metrics_total_return_uses_initial_nav_not_first_checkpoint.
 """
 from __future__ import annotations
 
@@ -19,7 +24,10 @@ from src.metrics import PHASE2_PERIODS_PER_YEAR, NavHistory, compute_metrics
 
 
 def make_nav_history(
-    nav_values: list[float], periods_per_year: float, dates: list[pd.Timestamp] | None = None
+    nav_values: list[float],
+    periods_per_year: float,
+    dates: list[pd.Timestamp] | None = None,
+    initial_nav: float | None = None,
 ) -> NavHistory:
     if dates is None:
         dates = list(pd.date_range("2026-01-05", periods=len(nav_values), freq="D"))
@@ -28,6 +36,11 @@ def make_nav_history(
         nav=nav_values,
         benchmark_normalized=nav_values,  # Benchmark irrelevant fuer diesen Test
         periods_per_year=periods_per_year,
+        # Default = nav_values[0]: die meisten Tests hier pruefen Annualisierung/
+        # Phasenlogik, nicht total_return, und sollen sich nicht aendern, wenn
+        # initial_nav nicht explizit gesetzt wird (siehe test_total_return_uses_
+        # initial_nav_not_first_checkpoint fuer den eigentlichen Bugfix-Test).
+        initial_nav=initial_nav if initial_nav is not None else nav_values[0],
     )
 
 
@@ -100,6 +113,33 @@ def test_compute_metrics_uses_phase2_annualization_once_enough_daily_returns_exi
     # total_return/max_drawdown bleiben ueber die volle Historie (Phase 1 + 2)
     expected_total_return = nav.iloc[-1] / nav.iloc[0] - 1
     assert result.total_return_pct == pytest.approx(expected_total_return)
+
+
+def test_compute_metrics_total_return_uses_initial_nav_not_first_checkpoint():
+    """Bugfix 2026-09-12: total_return_pct muss gegen NavHistory.initial_nav
+    (das echte Studien-Startkapital) rechnen, nicht gegen nav[0] (den ersten
+    Checkpoint DIESES Laufs). Reproduziert den realen Fall vom 11.09.2026:
+    ein Lauf, dessen Zeitreihe erst ab einem spaeteren Checkpoint beginnt
+    (z.B. weil Phase 2 mehr Checkpoints pro Lauf erzeugt als Phase 1), darf
+    "Gesamtrendite" nicht mit der letzten Perioden-Rendite verwechseln."""
+    # Nachgebildet an den echten Werten: Startkapital 1'000'000, aber der
+    # erste Checkpoint DIESES Laufs (nav[0]) liegt schon bei ~969'273 (nach
+    # Kursverlusten vor Laufbeginn) - nav[0] != initial_nav.
+    nav_history = make_nav_history(
+        nav_values=[969_272.89, 971_148.52],
+        periods_per_year=252,
+        initial_nav=1_000_000.0,
+    )
+
+    result = compute_metrics(nav_history)
+
+    # Vor dem Fix waere das hier faelschlich nav[-1]/nav[0] - 1 (~+0.19%,
+    # identisch zu last_period_return_pct) statt der echten kumulierten
+    # Rendite seit Studienbeginn (~-2.89%).
+    expected_total_return = 971_148.52 / 1_000_000.0 - 1
+    assert expected_total_return < 0  # sanity: NAV liegt unter dem Startkapital
+    assert result.total_return_pct == pytest.approx(expected_total_return)
+    assert result.total_return_pct != pytest.approx(result.last_period_return_pct)
 
 
 def test_compute_metrics_falls_back_to_phase1_annualization_before_regime_change():

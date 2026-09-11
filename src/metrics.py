@@ -27,9 +27,11 @@ mit einer 1-Tages-Phase-2-Rendite in derselben Standardabweichung vermischt
 und mit dem falschen Faktor annualisiert. Solange nicht genug reine
 Phase-2-Renditen vorliegen (< 2), faellt die Berechnung auf die alte
 Phase-1-Annualisierung (`NavHistory.periods_per_year`) ueber die komplette
-Historie zurueck. total_return/max_drawdown sind von alldem nicht betroffen,
-da sie nur Anfang/Ende bzw. Peak/Tal vergleichen, unabhaengig vom
-Checkpoint-Abstand.
+Historie zurueck. Vol/Sharpe sind die einzigen Kennzahlen, die von der
+Checkpoint-Dichte/-Einteilung abhaengen: total_return vergleicht `nav[-1]`
+gegen das feste `NavHistory.initial_nav` (Studien-Startkapital, siehe dortiger
+Kommentar - NICHT `nav[0]`) und max_drawdown gegen das laufende Peak/Tal
+innerhalb der Zeitreihe, beides unabhaengig vom Checkpoint-Abstand.
 """
 from __future__ import annotations
 
@@ -62,6 +64,17 @@ class NavHistory:
     # Checkpoints/Jahr, abgeleitet aus den `freqs` von reconstruct_nav_history -
     # treibt die Annualisierung in compute_metrics (Volatilitaet, Sharpe).
     periods_per_year: float
+    # Bugfix 2026-09-12: das echte Startkapital der Studie
+    # (portfolio_row["initial_cash_balance"]), NICHT dasselbe wie `nav[0]`.
+    # `nav[0]` ist nur der erste *Checkpoint* der in diesem Lauf rekonstruierten
+    # Zeitreihe - je nach Checkpoint-Dichte (siehe Phase 1/2-Regimewechsel)
+    # kann das ein beliebiger spaeterer Zeitpunkt nach dem ersten Trade sein,
+    # nicht der Studienbeginn. compute_metrics' total_return muss deshalb
+    # gegen `initial_nav` rechnen, nicht gegen `nav[0]` - sonst misst
+    # "Gesamtrendite" je nach Lauf mal die Rendite seit Studienbeginn, mal nur
+    # die Rendite seit dem letzten Checkpoint (was `last_period_return_pct`
+    # ohnehin schon abdeckt).
+    initial_nav: float
 
 
 @dataclass(frozen=True)
@@ -154,6 +167,7 @@ def reconstruct_nav_history(
             nav=[initial_cash],
             benchmark_normalized=[initial_cash],
             periods_per_year=periods_per_year,
+            initial_nav=initial_cash,
         )
 
     snapshots = _replay_ledger(trades, initial_cash)
@@ -217,7 +231,11 @@ def reconstruct_nav_history(
             benchmark_normalized.append(initial_cash * (price / benchmark_start_price))
 
     return NavHistory(
-        dates=dates, nav=nav_values, benchmark_normalized=benchmark_normalized, periods_per_year=periods_per_year
+        dates=dates,
+        nav=nav_values,
+        benchmark_normalized=benchmark_normalized,
+        periods_per_year=periods_per_year,
+        initial_nav=initial_cash,
     )
 
 
@@ -230,7 +248,15 @@ def compute_metrics(
     benchmark = pd.Series(nav_history.benchmark_normalized, index=nav_history.dates)
     returns = nav.pct_change().dropna()
 
-    total_return = nav.iloc[-1] / nav.iloc[0] - 1
+    # Bugfix 2026-09-12: vorher `nav.iloc[-1] / nav.iloc[0] - 1` - das
+    # verwechselte "erster Checkpoint dieses Laufs" mit "Studienbeginn".
+    # Fiel bisher nicht auf, weil `nav.iloc[0]` in fast allen bisherigen
+    # Laeufen zufaellig gleich `initial_nav` war (nur 1 Checkpoint pro Lauf).
+    # Seit dem Phase-1/2-Regimewechsel (mehr Checkpoints/Lauf) driftet
+    # `nav.iloc[0]` vom echten Startkapital weg, wodurch "Gesamtrendite" nur
+    # noch die Rendite seit dem vorletzten Checkpoint zeigte - identisch zu
+    # `last_period_return_pct` statt zur kumulierten Rendite seit Studienstart.
+    total_return = nav.iloc[-1] / nav_history.initial_nav - 1
     last_period_return = float(returns.iloc[-1]) if not returns.empty else None
 
     # Eine Rendite zaehlt nur als Phase-2-Rendite, wenn auch ihr Intervall-

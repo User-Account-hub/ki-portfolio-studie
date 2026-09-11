@@ -14,7 +14,7 @@ def get_trading_decision(
     user_prompt: str,
     api_key: str,
     model: str = "claude-sonnet-5",
-    max_tokens: int = 16000,
+    max_tokens: int = 24000,
 ) -> str:
     """Calls Claude and returns the raw text of its response.
 
@@ -45,12 +45,21 @@ def get_trading_decision(
     unveraendert (weiterhin der einzige "on"-Modus fuer claude-sonnet-5,
     unabhaengig vom effort-Wert). "max" laesst dem Modell deutlich mehr
     Denk-Tokens als "medium" - das erhoeht das Risiko, dass die Denk- +
-    Text-Tokens zusammen die aktuellen 16000 max_tokens ausschoepfen, bevor
-    die JSON-Order-Antwort fertig ist. Kein automatisches Gegenmittel hier
-    eingebaut (max_tokens bewusst unveraendert gelassen, siehe Thesis-
-    Vorgabe) - die stop_reason=="max_tokens"-Warnung faengt das ab, sollte es
-    eintreten; falls Truncations haeufiger auftreten, ist Erhoehen von
-    max_tokens der richtige Hebel (siehe Kommentar im if-Block unten).
+    Text-Tokens zusammen die damaligen 16000 max_tokens ausschoepfen, bevor
+    die JSON-Order-Antwort fertig ist.
+
+    v5 (2026-09-11, bestaetigter Produktionsfehler - kein Ad-hoc-Wunsch,
+    daher kein Verstoss gegen die Governance-Regel zu spontanen Prompt-
+    Aenderungen): genau das v4-Risiko ist eingetreten. Der Lauf vom
+    2026-09-11 15:14 UTC hatte stop_reason=="max_tokens" UND einen komplett
+    leeren `raw_response` (0 Zeichen, kein einziger "text"-Content-Block) -
+    schlimmer als die reine Truncation-mitten-im-JSON vom 2026-09-08-Incident,
+    weil das Thinking bei effort="max" das gesamte 16000-Token-Budget
+    aufgebraucht hat, bevor ueberhaupt Text-Output begann. Gegenmassnahme:
+    `effort` zurueck auf "high" (direkter Hebel gegen den Ursprung des
+    Problems, weniger angefordertes Thinking) UND `max_tokens` von 16000 auf
+    24000 erhoeht (Sicherheitsmarge, falls "high" bei einem komplexen Prompt
+    trotzdem mal knapp wird) - siehe Thesis-Diagnose-Session vom 2026-09-12.
     """
     # TEMP DEBUG (see task: httpcore.LocalProtocolError persists after strip()).
     # Never print the key itself - only length/whitespace metadata - so this
@@ -73,7 +82,7 @@ def get_trading_decision(
         max_tokens=max_tokens,
         system=system_prompt,
         thinking={"type": "adaptive"},
-        output_config={"effort": "max"},
+        output_config={"effort": "high"},
         messages=[{"role": "user", "content": user_prompt}],
     )
     if response.stop_reason == "max_tokens":
