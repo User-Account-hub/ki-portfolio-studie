@@ -302,6 +302,7 @@ def execute_proposed_orders(
             order, ctx, price, current_prices, risk_config,
             order_segment=order_meta.segment if order_meta is not None else None,
             order_cap_tier=order_meta.cap_tier if order_meta is not None else None,
+            universe_symbols=set(symbol_metadata) or None,
         )
         risk_check_log.append({"symbol": order.symbol, "approved": check.approved, "reasons": check.reasons})
 

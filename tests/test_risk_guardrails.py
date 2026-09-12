@@ -541,3 +541,38 @@ def test_short_stop_loss_ignores_long_positions():
     current_prices = {"AAPL": 500.0}
     forced = evaluate_short_positions_for_stop_loss(positions, current_prices, short_stop_loss_pct=-0.20)
     assert forced == []
+
+
+# --- LOW-3: investment-universe allowlist (defense in depth) --------------------
+
+
+def test_evaluate_order_rejects_symbol_outside_universe():
+    config = make_config()
+    order = make_order(symbol="GME", side="buy", quantity=1)
+    ctx = make_ctx()
+    result = evaluate_order(
+        order, ctx, price=150.0, current_prices={}, config=config,
+        universe_symbols={"AAPL", "NVDA"},
+    )
+    assert not result.approved
+    assert "Universum" in result.reasons[0]
+
+
+def test_evaluate_order_allows_symbol_in_universe():
+    config = make_config()
+    order = make_order(symbol="AAPL", side="buy", quantity=1)
+    ctx = make_ctx()
+    result = evaluate_order(
+        order, ctx, price=150.0, current_prices={}, config=config,
+        universe_symbols={"AAPL", "NVDA"},
+    )
+    assert result.approved
+
+
+def test_evaluate_order_skips_universe_check_when_not_provided():
+    """Backward compatible: no universe set -> gate is skipped."""
+    config = make_config()
+    order = make_order(symbol="ANYTHING", side="buy", quantity=1)
+    ctx = make_ctx()
+    result = evaluate_order(order, ctx, price=150.0, current_prices={}, config=config)
+    assert result.approved
