@@ -45,6 +45,12 @@ class WatchlistSymbol:
     # (Segmentgewicht, korrelierte Krypto/Mining-Exposure, Micro-Cap-Sublimit).
     segment: str | None = None
     cap_tier: str | None = None
+    # Wirtschaftlich gehebelte Instrumente, die NICHT als strukturiertes Produkt
+    # (leverage_certificate/mini_future/warrant) getaggt sind - z.B. gehebelte
+    # Single-Stock-ETFs wie NVDL/TSDD. Sorgt dafuer, dass die Hebel-spezifischen
+    # Guardrails (Hebel-/Strukturprodukt-Cap, Drawdown-Circuit-Breaker) auch fuer
+    # sie greifen, obwohl ihr instrument_type "etf" ist. Siehe risk_guardrails.
+    leveraged: bool = False
 
 
 @dataclass(frozen=True)

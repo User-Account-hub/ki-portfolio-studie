@@ -303,6 +303,7 @@ def execute_proposed_orders(
             order_segment=order_meta.segment if order_meta is not None else None,
             order_cap_tier=order_meta.cap_tier if order_meta is not None else None,
             universe_symbols=set(symbol_metadata) or None,
+            order_leveraged=getattr(order_meta, "leveraged", False) if order_meta is not None else False,
         )
         risk_check_log.append({"symbol": order.symbol, "approved": check.approved, "reasons": check.reasons})
 
