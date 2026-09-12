@@ -397,6 +397,7 @@ def evaluate_order(
     config,
     order_segment: str | None = None,
     order_cap_tier: str | None = None,
+    universe_symbols: set[str] | None = None,
 ) -> RiskCheckResult:
     """Runs all applicable guardrail checks for a single proposed order.
 
@@ -407,7 +408,20 @@ def evaluate_order(
     taxonomy values (resolved by the caller from the watchlist - see
     execution.py); None for symbols outside that taxonomy (e.g. structured
     products), in which case the corresponding Kap.-6.8 checks no-op.
+
+    `universe_symbols`, when provided, is the set of symbols the model is
+    allowed to trade (the watchlist). Any order for a symbol outside it is
+    rejected outright. The system prompt already instructs Claude to stay
+    in-universe, but - consistent with the defense-in-depth stance of this
+    module - execution must not rely on the model honouring that. When None
+    (e.g. in unit tests that exercise a single check), the allowlist gate is
+    skipped.
     """
+    if universe_symbols and order.symbol not in universe_symbols:
+        return RiskCheckResult.reject(
+            f"Symbol '{order.symbol}' ist nicht im Anlage-Universum - Order abgelehnt."
+        )
+
     if order.side == OrderSide.SHORT and not config.allow_short:
         return RiskCheckResult.reject("Short-Positionen sind laut Risk-Config nicht erlaubt.")
 
