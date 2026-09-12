@@ -98,6 +98,7 @@ def open_positions_as_risk_objects(
                 avg_entry_price=r["avg_entry_price"],
                 segment=meta.segment if meta is not None else None,
                 cap_tier=meta.cap_tier if meta is not None else None,
+                leveraged=getattr(meta, "leveraged", False) if meta is not None else False,
             )
         )
     return positions

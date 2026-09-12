@@ -541,3 +541,59 @@ def test_short_stop_loss_ignores_long_positions():
     current_prices = {"AAPL": 500.0}
     forced = evaluate_short_positions_for_stop_loss(positions, current_prices, short_stop_loss_pct=-0.20)
     assert forced == []
+
+
+# --- MED-2: leverage controls cover flagged leveraged ETFs (NVDL/TSDD) ----------
+
+
+def test_structured_products_cap_applies_to_flagged_leveraged_etf():
+    """A leveraged ETF (instrument_type 'etf', leveraged=True) must count toward
+    the leverage cap even though it is not a tagged structured product."""
+    existing = OpenPosition(
+        symbol="NVDL", instrument_type="etf", side="long", quantity=1000,
+        avg_entry_price=15.0, leveraged=True,
+    )
+    order = make_order(symbol="TSDD", instrument_type="etf", side="buy", notional=10_000)
+    ctx = make_ctx(nav=100_000.0, positions=[existing])
+    result = check_structured_products_cap(
+        order, ctx, price=10.0, current_prices={"NVDL": 15.0}, max_pct_of_nav=0.20,
+        order_leveraged=True,
+    )
+    # existing 15_000 + new 10_000 = 25_000 > 20% of 100_000
+    assert not result.approved
+
+
+def test_structured_products_cap_ignores_plain_etf():
+    order = make_order(symbol="SPY", instrument_type="etf", side="buy", notional=50_000)
+    ctx = make_ctx(nav=100_000.0)
+    result = check_structured_products_cap(
+        order, ctx, price=500.0, current_prices={}, max_pct_of_nav=0.20, order_leveraged=False
+    )
+    assert result.approved
+
+
+def test_circuit_breaker_blocks_flagged_leveraged_etf_after_drawdown():
+    order = make_order(symbol="NVDL", instrument_type="etf", side="buy", notional=1000)
+    ctx = make_ctx(nav=74_000.0, peak_nav=100_000.0)  # -26% drawdown
+    result = check_circuit_breaker(order, ctx, drawdown_pct=-0.25, order_leveraged=True)
+    assert not result.approved
+
+
+def test_circuit_breaker_ignores_plain_etf_after_drawdown():
+    order = make_order(symbol="SPY", instrument_type="etf", side="buy", quantity=10)
+    ctx = make_ctx(nav=50_000.0, peak_nav=100_000.0)
+    result = check_circuit_breaker(order, ctx, drawdown_pct=-0.25, order_leveraged=False)
+    assert result.approved
+
+
+def test_evaluate_order_routes_leveraged_flag_to_circuit_breaker():
+    """Integration: evaluate_order passes order_leveraged through so a flagged
+    leveraged ETF is blocked by the circuit breaker after a drawdown."""
+    config = make_config()
+    order = make_order(symbol="NVDL", instrument_type="etf", side="buy", quantity=1)
+    ctx = make_ctx(nav=74_000.0, start_of_run_nav=74_000.0, peak_nav=100_000.0)
+    result = evaluate_order(
+        order, ctx, price=15.0, current_prices={}, config=config, order_leveraged=True
+    )
+    assert not result.approved
+    assert any("Circuit-Breaker" in r for r in result.reasons)

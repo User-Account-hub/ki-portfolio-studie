@@ -25,6 +25,11 @@ class OpenPosition:
     # Produkte und alles ausserhalb des Anhang-A-Universums.
     segment: str | None = None
     cap_tier: str | None = None
+    # Wirtschaftlich gehebelt, aber nicht als strukturiertes Produkt getaggt
+    # (z.B. gehebelte ETFs NVDL/TSDD) - vom Caller aus der Watchlist angereichert
+    # (siehe db.open_positions_as_risk_objects). Bringt diese Positionen in den
+    # Geltungsbereich der Hebel-spezifischen Guardrails.
+    leveraged: bool = False
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,16 @@ class PortfolioContext:
         total = 0.0
         for p in self.positions:
             if p.instrument_type in STRUCTURED_INSTRUMENT_TYPES:
+                price = current_prices.get(p.symbol, p.avg_entry_price)
+                total += p.quantity * price
+        return total
+
+    def leveraged_notional(self, current_prices: dict[str, float]) -> float:
+        """Total notional of all leverage-controlled positions (structured
+        products + watchlist-flagged leveraged instruments like NVDL/TSDD)."""
+        total = 0.0
+        for p in self.positions:
+            if _is_leverage_controlled(p.instrument_type, p.leveraged):
                 price = current_prices.get(p.symbol, p.avg_entry_price)
                 total += p.quantity * price
         return total
@@ -92,6 +107,14 @@ class ForcedStopLossAction:
     current_price: float
     loss_pct: float
     documentation: str
+
+
+def _is_leverage_controlled(instrument_type: str, leveraged: bool) -> bool:
+    """True for instruments the leverage-specific guardrails (structured-products
+    cap + drawdown circuit-breaker) must cover: the tagged structured products
+    AND anything flagged `leveraged` in the watchlist (e.g. the 2x ETFs NVDL/TSDD,
+    whose instrument_type is "etf" but which carry real economic leverage)."""
+    return instrument_type in STRUCTURED_INSTRUMENT_TYPES or leveraged
 
 
 def compute_nav(cash: float, positions: list[OpenPosition], current_prices: dict[str, float]) -> float:
@@ -190,18 +213,24 @@ def check_structured_products_cap(
     price: float,
     current_prices: dict[str, float],
     max_pct_of_nav: float,
+    order_leveraged: bool = False,
 ) -> RiskCheckResult:
-    if order.instrument_type.value not in STRUCTURED_INSTRUMENT_TYPES:
+    """Aggregate cap on leveraged exposure. Covers tagged structured products
+    AND watchlist-flagged leveraged instruments (e.g. the 2x ETFs NVDL/TSDD) -
+    keyed off economic leverage via `_is_leverage_controlled`, not the
+    instrument_type label alone, so a 2x ETF cannot sidestep the cap by being
+    typed "etf"."""
+    if not _is_leverage_controlled(order.instrument_type.value, order_leveraged):
         return RiskCheckResult.ok()
     if order.side not in (OrderSide.BUY, OrderSide.SHORT):
         return RiskCheckResult.ok()
 
-    current_total = ctx.structured_products_notional(current_prices)
+    current_total = ctx.leveraged_notional(current_prices)
     added = order_notional(order, price)
     limit = ctx.nav * max_pct_of_nav
     if current_total + added > limit:
         return RiskCheckResult.reject(
-            f"Strukturierte Produkte gesamt ({current_total + added:.2f}) würden Limit von "
+            f"Gehebelte/strukturierte Produkte gesamt ({current_total + added:.2f}) würden Limit von "
             f"{max_pct_of_nav:.0%} des NAV ({limit:.2f}) überschreiten."
         )
     return RiskCheckResult.ok()
@@ -350,14 +379,17 @@ def check_circuit_breaker(
     order: ProposedOrder,
     ctx: PortfolioContext,
     drawdown_pct: float,
+    order_leveraged: bool = False,
 ) -> RiskCheckResult:
     """Kap. 6.8: Portfolio-Circuit-Breaker. Sobald der NAV seit seinem
     bisherigen Höchststand (ctx.peak_nav) um mehr als abs(drawdown_pct)
     gefallen ist, werden keine neuen/aufstockenden Hebelpositionen
     (strukturierte Produkte) mehr zugelassen. Bestehende Positionen können
     weiterhin reduziert/geschlossen werden; reguläre Aktien-/ETF-Orders sind
-    nicht betroffen (dafür gilt weiterhin nur der daily_loss_stop_pct)."""
-    if order.instrument_type.value not in STRUCTURED_INSTRUMENT_TYPES:
+    nicht betroffen (dafür gilt weiterhin nur der daily_loss_stop_pct). Eine
+    "Hebelposition" umfasst hier strukturierte Produkte UND watchlist-markierte
+    gehebelte Instrumente (z.B. NVDL/TSDD), keyed off _is_leverage_controlled."""
+    if not _is_leverage_controlled(order.instrument_type.value, order_leveraged):
         return RiskCheckResult.ok()
     if order.side not in (OrderSide.BUY, OrderSide.SHORT):
         return RiskCheckResult.ok()
@@ -397,6 +429,7 @@ def evaluate_order(
     config,
     order_segment: str | None = None,
     order_cap_tier: str | None = None,
+    order_leveraged: bool = False,
 ) -> RiskCheckResult:
     """Runs all applicable guardrail checks for a single proposed order.
 
@@ -423,7 +456,8 @@ def evaluate_order(
         check_trade_notional(order, ctx, price, config.max_trade_notional_pct_of_nav),
         check_position_size(order, ctx, price, config.max_position_size_pct_of_portfolio),
         check_structured_products_cap(
-            order, ctx, price, current_prices, config.structured_products_max_notional_pct_of_nav
+            order, ctx, price, current_prices, config.structured_products_max_notional_pct_of_nav,
+            order_leveraged=order_leveraged,
         ),
         check_segment_weight(order, ctx, price, current_prices, order_segment, config.max_segment_weight_pct_of_nav),
         check_correlated_segment_exposure(
@@ -438,7 +472,7 @@ def evaluate_order(
         check_micro_cap_exposure(order, ctx, price, current_prices, order_cap_tier, config.max_micro_cap_pct_of_nav),
         check_top3_concentration(order, ctx, price, current_prices, config.max_top3_concentration_pct_of_nav),
         check_min_cash_quota(order, ctx, price, config.min_cash_pct_of_nav),
-        check_circuit_breaker(order, ctx, config.circuit_breaker_drawdown_pct),
+        check_circuit_breaker(order, ctx, config.circuit_breaker_drawdown_pct, order_leveraged=order_leveraged),
     ]
     result = RiskCheckResult.ok()
     for c in checks:
