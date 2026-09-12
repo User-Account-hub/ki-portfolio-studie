@@ -443,6 +443,8 @@ symbols:
   - symbol: NVDL
     instrument_type: etf  # GraniteShares 2x Long NVDA Daily ETF (Long-Hebel-Proxy auf NVDA)
     underlying_symbol: NVDA
+    leveraged: true  # 2x gehebelt -> Hebel-Guardrails (Cap + Circuit-Breaker) gelten
   - symbol: TSDD
     instrument_type: etf  # GraniteShares 2x Short TSLA Daily ETF (Short/Inverse-Proxy auf TSLA)
     underlying_symbol: TSLA
+    leveraged: true  # 2x gehebelt -> Hebel-Guardrails (Cap + Circuit-Breaker) gelten
