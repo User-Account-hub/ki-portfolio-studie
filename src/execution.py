@@ -235,13 +235,6 @@ def execute_forced_stop_loss_actions(
             )
             continue
 
-        order = ProposedOrder(
-            symbol=action.symbol,
-            instrument_type=action.instrument_type,
-            side="cover",
-            quantity=action.quantity,
-            rationale=action.documentation,
-        )
         # closure_notes trägt die Dokumentationspflicht direkt auf der Position mit.
         position_side = POSITION_SIDE[OrderSide.COVER]
         row = conn.execute(

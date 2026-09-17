@@ -213,3 +213,45 @@ def test_execute_forced_stop_loss_actions_deducts_transaction_cost():
 
     trade = conn.execute("SELECT * FROM trades WHERE portfolio_id = ?", (portfolio["id"],)).fetchone()
     assert trade["transaction_cost"] == pytest.approx(expected_cost)
+
+
+def test_execute_forced_stop_loss_actions_does_not_crash_on_structured_product():
+    """Regressionstest: ein Short-Stop-Loss auf ein strukturiertes Produkt
+    (leverage_certificate/mini_future/warrant) durfte bislang nicht ausgeloest
+    werden, ohne die Pipeline abstuerzen zu lassen - execute_forced_stop_loss_
+    actions baute intern einen (ungenutzten) ProposedOrder ohne
+    underlying_symbol, das strukturierte Produkte laut Pydantic-Validierung
+    zwingend brauchen. Seit PR #3 stehen NVDL/TSDD unter den Hebel-Guardrails
+    und koennten geshortet werden - real erreichbar, nicht nur theoretisch,
+    auch wenn dieser konkrete Crash-Pfad echte strukturierte Produkte
+    (mini_future/leverage_certificate/warrant) statt der als 'etf' getaggten
+    NVDL/TSDD betrifft. Fix: der tote ProposedOrder-Codepfad wurde entfernt."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol="MINI-TSLA-SHORT-1",
+        instrument_type="mini_future", underlying_symbol="TSLA", side="short",
+        delta_quantity=10.0, fill_price=100.0,
+    )
+    action = ForcedStopLossAction(
+        symbol="MINI-TSLA-SHORT-1", instrument_type="mini_future", quantity=10.0,
+        entry_price=100.0, current_price=130.0, loss_pct=0.30, documentation="test",
+    )
+
+    # Darf keine ValidationError (oder sonstige Exception) werfen:
+    trade_ids = execution.execute_forced_stop_loss_actions(
+        conn, portfolio, [action], broker_client=None, transaction_cost_pct=0.001,
+    )
+    assert len(trade_ids) == 1
+
+    updated = db.get_portfolio(conn, "test")
+    notional = 10.0 * 130.0
+    expected_cost = notional * 0.001
+    assert updated["cash_balance"] == pytest.approx(100_000.0 - notional - expected_cost)
+
+    position = conn.execute(
+        "SELECT * FROM positions WHERE portfolio_id = ? AND symbol = ?", (portfolio["id"], "MINI-TSLA-SHORT-1")
+    ).fetchone()
+    assert position["status"] == "closed"
+    assert position["closure_reason"] == "short_stop_loss_forced"
