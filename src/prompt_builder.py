@@ -110,6 +110,7 @@ def build_user_prompt(
     watchlist: Watchlist,
     snapshots: dict[str, MarketSnapshot],
     risk_config: RiskConfig,
+    latest_reflection=None,
 ) -> str:
     portfolio_state = {
         "name": portfolio_row["name"],
@@ -174,9 +175,38 @@ def build_user_prompt(
         "universe": universe,
         "market_data": market_data,
         "risk_limits": limits,
+        # Kap. 6.12.3: Nachwirkung der letzten monatlichen Tiefenreflexion
+        # (siehe deep_reflection_prompt.py) - None vor der ersten Reflexion
+        # (Woche 5) oder falls die letzte Reflexion nicht geparst werden
+        # konnte. Bleibt bis zur naechsten Reflexion unveraendert im
+        # taeglichen Prompt, damit ihre Erkenntnisse tatsaechlich nachwirken
+        # statt nur im Report zu stehen.
+        "latest_deep_reflection": _summarize_reflection_for_prompt(latest_reflection),
     }
     return (
         "Aktueller Portfolio-Zustand, Marktdaten und Risikolimiten (JSON):\n\n"
         f"{json.dumps(payload, indent=2, ensure_ascii=False)}\n\n"
         "Erstelle deine Handelsentscheidung gemäss dem im System-Prompt definierten JSON-Schema."
     )
+
+
+def _summarize_reflection_for_prompt(latest_reflection) -> dict | None:
+    """`latest_reflection` ist eine 'decisions'-Zeile mit model='deep_reflection'
+    (siehe db.get_latest_reflection) oder None. Extrahiert nur die fuer die
+    Tagesentscheidung relevanten Felder aus ihrem raw_response-JSON - nicht
+    den vollen Reflexions-Prompt/-Output, um den Tages-Prompt schlank zu
+    halten. Robust gegen fehlende/kaputte Daten (z.B. eine Reflexion, deren
+    raw_response aus irgendeinem Grund nicht mehr valide JSON ist) - liefert
+    dann None statt den gesamten Tages-Prompt-Aufbau zum Absturz zu bringen."""
+    if latest_reflection is None:
+        return None
+    try:
+        data = json.loads(latest_reflection["raw_response"])
+    except (TypeError, ValueError):
+        return None
+    return {
+        "created_at": latest_reflection["created_at"],
+        "theses_falsified_or_overdue": data.get("theses_falsified_or_overdue", []),
+        "pattern_matching_concerns": data.get("pattern_matching_concerns"),
+        "portfolio_stance_assessment": data.get("portfolio_stance_assessment"),
+    }

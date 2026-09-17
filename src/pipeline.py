@@ -19,10 +19,13 @@ Usage:
 """
 from __future__ import annotations
 
+import datetime
 import logging
 import sys
 
-from src import broker_alpaca, data_fetch, data_quality, db, execution, metrics, reporting
+import pandas as pd
+
+from src import broker_alpaca, data_fetch, data_quality, db, deep_reflection_prompt, deep_reflection_schema, execution, metrics, reporting
 from src.claude_client import get_trading_decision
 from src.config import AppConfig, RiskConfig, Watchlist
 from src.order_schema import STRUCTURED_INSTRUMENT_TYPES, OrderParsingError, parse_orders_from_json
@@ -70,6 +73,104 @@ def _run_data_quality_checks(
         log.exception("Kurshistorien-Abruf (Datenqualität) fehlgeschlagen - wird übersprungen.")
 
     return data_quality.build_report(yfinance_prices, alpaca_prices, price_histories)
+
+
+def _nav_value_at_or_before(dates: list[pd.Timestamp], values: list[float], target: pd.Timestamp) -> float | None:
+    """Letzter bekannter Wert aus `values` (nav/benchmark_normalized/
+    baseline_normalized aus einer NavHistory) an oder vor `target` - genutzt,
+    um den Stand zu Beginn einer Tiefenreflexions-Periode aus der ohnehin
+    bereits fuer den Report berechneten NavHistory zu extrahieren, ohne eine
+    weitere yfinance-Historie abzufragen."""
+    eligible = [v for d, v in zip(dates, values) if d <= target]
+    return eligible[-1] if eligible else None
+
+
+def _maybe_run_deep_reflection(
+    conn,
+    app_config: AppConfig,
+    portfolio_row,
+    nav_history,
+    metrics_result,
+):
+    """Kap. 6.12.3: monatliche Tiefenreflexion zusätzlich zum täglichen
+    Ablauf, ab Woche 5 der offiziellen Studie (rollierende 4-Wochen-Perioden
+    ab deep_reflection_prompt.OFFICIAL_STUDY_START - siehe dort). Rein
+    analytisch (keine Orders, kein Risk-Guardrail-Pfad); das Ergebnis wird
+    als eigener 'deep_reflection'-Decision-Eintrag gespeichert und fliesst
+    ab dem nächsten Lauf über db.get_latest_reflection/build_user_prompt in
+    die tägliche Entscheidung ein.
+
+    Weder ein Ausbleiben (noch nicht fällig) noch ein Fehler dieses Aufrufs
+    selbst (Claude-API-Fehler, kein valides JSON) darf den für diesen Lauf
+    bereits abgeschlossenen Handelsteil oder den Report gefährden - bei
+    einem Fehler wird NICHTS in der DB vermerkt, sodass derselbe fällige
+    Zeitraum beim nächsten Lauf automatisch erneut versucht wird (siehe
+    deep_reflection_prompt.due_reflection_period's Docstring).
+    """
+    reflection_count = db.count_deep_reflections(conn, portfolio_row["id"])
+    today = pd.Timestamp(datetime.date.today())
+    due_period = deep_reflection_prompt.due_reflection_period(reflection_count, today)
+    if due_period is None:
+        return None
+    period_start, period_end = due_period
+    log.info(
+        "Monatliche Tiefenreflexion fällig (Periode %d, %s bis %s)...",
+        reflection_count + 1, period_start.date(), period_end.date(),
+    )
+    try:
+        since = period_start.strftime("%Y-%m-%d %H:%M:%S")  # siehe db.get_decisions_since-Docstring
+        decisions_in_period = db.get_decisions_since(conn, portfolio_row["id"], since)
+        trades_in_period = db.get_trades_since(conn, portfolio_row["id"], since)
+
+        nav_at_start = _nav_value_at_or_before(nav_history.dates, nav_history.nav, period_start) or nav_history.initial_nav
+        benchmark_at_start = (
+            _nav_value_at_or_before(nav_history.dates, nav_history.benchmark_normalized, period_start)
+            or nav_history.initial_nav
+        )
+        baseline_at_start = (
+            _nav_value_at_or_before(nav_history.dates, nav_history.baseline_normalized, period_start)
+            or nav_history.initial_nav
+        )
+
+        user_prompt = deep_reflection_prompt.build_deep_reflection_user_prompt(
+            portfolio_row,
+            decisions_in_period,
+            trades_in_period,
+            period_start,
+            period_end,
+            period_portfolio_return_pct=metrics_result.current_nav / nav_at_start - 1,
+            period_benchmark_return_pct=nav_history.benchmark_normalized[-1] / benchmark_at_start - 1,
+            period_baseline_return_pct=nav_history.baseline_normalized[-1] / baseline_at_start - 1,
+        )
+        raw_response = get_trading_decision(
+            deep_reflection_prompt.DEEP_REFLECTION_SYSTEM_PROMPT,
+            user_prompt,
+            api_key=app_config.anthropic_api_key,
+            model=app_config.claude_model,
+        )
+        reflection = deep_reflection_schema.parse_reflection_from_json(raw_response)
+    except Exception:
+        log.exception(
+            "Monatliche Tiefenreflexion fehlgeschlagen - Report wird trotzdem erstellt, derselbe "
+            "Zeitraum wird beim nächsten fälligen Lauf automatisch erneut versucht."
+        )
+        return None
+
+    db.insert_decision(
+        conn,
+        portfolio_id=portfolio_row["id"],
+        model="deep_reflection",
+        prompt=user_prompt,
+        raw_response=raw_response,
+        proposed_orders=None,
+        risk_check_result=None,
+        rationale=reflection.reflection_commentary,
+        forced_action=False,
+        approved=True,
+        executed=False,
+    )
+    log.info("Tiefenreflexion abgeschlossen und gespeichert.")
+    return reflection
 
 
 def run() -> None:
@@ -167,7 +268,11 @@ def run() -> None:
                 executed=False,
             )
         else:
-            prompt = build_user_prompt(portfolio_row, open_position_rows, watchlist, snapshots, risk_config)
+            latest_reflection = db.get_latest_reflection(conn, portfolio_row["id"])
+            prompt = build_user_prompt(
+                portfolio_row, open_position_rows, watchlist, snapshots, risk_config,
+                latest_reflection=latest_reflection,
+            )
 
             log.info("Rufe Claude (%s) für Handelsentscheidung auf...", app_config.claude_model)
             raw_response = get_trading_decision(
@@ -226,6 +331,10 @@ def run() -> None:
             nav_history, risk_free_rate_annual=app_config.risk_free_rate_annual
         )
 
+        deep_reflection_result = _maybe_run_deep_reflection(
+            conn, app_config, portfolio_row, nav_history, metrics_result
+        )
+
         report_path = reporting.generate_report(
             portfolio_row,
             open_position_rows,
@@ -234,6 +343,7 @@ def run() -> None:
             portfolio_commentary,
             metrics_result,
             dq_report,
+            deep_reflection_result,
             app_config.reports_dir,
         )
         log.info("Report geschrieben: %s", report_path)

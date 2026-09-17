@@ -211,6 +211,105 @@ def test_ensure_trade_transaction_cost_column_on_db_without_it():
 # --- insert_trade records transaction_cost -------------------------------------
 
 
+# --- Monatliche Tiefenreflexion (Kap. 6.12.3, 2026-09-17) ----------------------
+
+
+def test_get_decisions_since_excludes_earlier_and_reflection_decisions():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    conn.execute(
+        "INSERT INTO decisions (portfolio_id, created_at, model, prompt) VALUES (?, ?, ?, ?)",
+        (portfolio_id, "2026-09-20 15:00:00", "claude-sonnet-5", "vor der Periode"),
+    )
+    conn.execute(
+        "INSERT INTO decisions (portfolio_id, created_at, model, prompt) VALUES (?, ?, ?, ?)",
+        (portfolio_id, "2026-09-25 15:00:00", "claude-sonnet-5", "in der Periode"),
+    )
+    conn.execute(
+        "INSERT INTO decisions (portfolio_id, created_at, model, prompt) VALUES (?, ?, ?, ?)",
+        (portfolio_id, "2026-09-26 15:00:00", "deep_reflection", "eigene Reflexion, nicht relevant"),
+    )
+    conn.commit()
+
+    rows = db.get_decisions_since(conn, portfolio_id, "2026-09-21 00:00:00")
+    assert [r["prompt"] for r in rows] == ["in der Periode"]
+
+
+def test_get_decisions_since_includes_same_day_as_period_start():
+    """Regressionstest: `since` muss im selben Textformat wie `created_at`
+    vorliegen (Leerzeichen, kein 'T') - ein ISO-Format mit 'T' (z.B. via
+    pd.Timestamp.isoformat()) sortiert lexikographisch NACH einem
+    Leerzeichen-Zeitstempel desselben Tages und wuerde Eintraege vom
+    Perioden-Start-Tag selbst faelschlich ausschliessen."""
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    conn.execute(
+        "INSERT INTO decisions (portfolio_id, created_at, model, prompt) VALUES (?, ?, ?, ?)",
+        (portfolio_id, "2026-09-21 08:03:00", "claude-sonnet-5", "am Perioden-Start-Tag selbst"),
+    )
+    conn.commit()
+
+    # "since" im korrekten SQLite-Format (Leerzeichen, Mitternacht) - so wie
+    # pipeline.py es via period_start.strftime("%Y-%m-%d %H:%M:%S") erzeugt.
+    rows = db.get_decisions_since(conn, portfolio_id, "2026-09-21 00:00:00")
+    assert len(rows) == 1
+
+    # Zum Vergleich: das fehleranfaellige ISO-Format mit "T" wuerde den
+    # Eintrag verlieren (dokumentiert den Bug, den die Docstring-Warnung in
+    # db.get_decisions_since verhindern soll).
+    rows_with_iso_bug = db.get_decisions_since(conn, portfolio_id, "2026-09-21T00:00:00")
+    assert rows_with_iso_bug == []
+
+
+def test_get_trades_since_filters_by_date():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    db.insert_trade(
+        conn, portfolio_id=portfolio_id, position_id=None, decision_id=None,
+        symbol="AAPL", instrument_type="equity", side="buy", quantity=1, price=100.0,
+        order_type="market", broker_order_id=None, source="alpaca", status="filled",
+    )
+    conn.execute("UPDATE trades SET executed_at = ? WHERE symbol = 'AAPL'", ("2026-09-15 10:00:00",))
+    db.insert_trade(
+        conn, portfolio_id=portfolio_id, position_id=None, decision_id=None,
+        symbol="MSFT", instrument_type="equity", side="buy", quantity=1, price=200.0,
+        order_type="market", broker_order_id=None, source="alpaca", status="filled",
+    )
+    conn.execute("UPDATE trades SET executed_at = ? WHERE symbol = 'MSFT'", ("2026-09-25 10:00:00",))
+    conn.commit()
+
+    rows = db.get_trades_since(conn, portfolio_id, "2026-09-21 00:00:00")
+    assert [r["symbol"] for r in rows] == ["MSFT"]
+
+
+def test_count_and_get_latest_reflection():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    assert db.count_deep_reflections(conn, portfolio_id) == 0
+    assert db.get_latest_reflection(conn, portfolio_id) is None
+
+    db.insert_decision(
+        conn, portfolio_id=portfolio_id, model="deep_reflection", prompt="p1",
+        raw_response='{"reflection_commentary": "erste"}', proposed_orders=None,
+        risk_check_result=None, rationale="erste", forced_action=False, approved=True, executed=False,
+    )
+    db.insert_decision(
+        conn, portfolio_id=portfolio_id, model="deep_reflection", prompt="p2",
+        raw_response='{"reflection_commentary": "zweite"}', proposed_orders=None,
+        risk_check_result=None, rationale="zweite", forced_action=False, approved=True, executed=False,
+    )
+    # Eine normale Tagesentscheidung darf nicht mitgezaehlt werden.
+    db.insert_decision(
+        conn, portfolio_id=portfolio_id, model="claude-sonnet-5", prompt="p3",
+        raw_response='{"orders": []}', proposed_orders=[], risk_check_result=[],
+        rationale=None, forced_action=False, approved=True, executed=False,
+    )
+
+    assert db.count_deep_reflections(conn, portfolio_id) == 2
+    latest = db.get_latest_reflection(conn, portfolio_id)
+    assert latest["rationale"] == "zweite"
+
+
 def test_insert_trade_records_explicit_transaction_cost():
     conn = make_conn()
     portfolio_id = make_portfolio(conn)

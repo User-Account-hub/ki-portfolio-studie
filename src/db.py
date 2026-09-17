@@ -320,3 +320,57 @@ def get_all_trades(conn: sqlite3.Connection, portfolio_id: int) -> list[sqlite3.
     return conn.execute(
         "SELECT * FROM trades WHERE portfolio_id = ? ORDER BY executed_at ASC", (portfolio_id,)
     ).fetchall()
+
+
+# --- Monatliche Tiefenreflexion (Kap. 6.12.3, 2026-09-17) -----------------------
+# Kein eigenes Schema noetig: eine Tiefenreflexion ist ein 'decisions'-Eintrag
+# mit model='deep_reflection' (proposed_orders/risk_check_result bleiben NULL,
+# da rein analytisch - siehe pipeline.py._maybe_run_deep_reflection).
+
+
+def get_decisions_since(conn: sqlite3.Connection, portfolio_id: int, since: str) -> list[sqlite3.Row]:
+    """Decisions seit `since`, OHNE vorherige Tiefenreflexionen selbst - die
+    Reflexion soll die taeglichen Handelsentscheidungen der Periode
+    bewerten, nicht ihre eigenen frueheren Ausgaben.
+
+    `since` muss im selben Textformat wie `created_at` vorliegen
+    (`YYYY-MM-DD HH:MM:SS`, SQLite's `datetime('now')`-Format) - NICHT
+    `pd.Timestamp.isoformat()`/`datetime.isoformat()` (die ein "T" statt
+    eines Leerzeichens einfuegen, was den String-Vergleich >= fuer Zeiten am
+    selben Tag falsch herum sortieren wuerde). Aufrufer sollten
+    `.strftime("%Y-%m-%d %H:%M:%S")` verwenden, siehe pipeline.py."""
+    return conn.execute(
+        """
+        SELECT * FROM decisions
+        WHERE portfolio_id = ? AND created_at >= ? AND model != 'deep_reflection'
+        ORDER BY created_at ASC
+        """,
+        (portfolio_id, since),
+    ).fetchall()
+
+
+def get_trades_since(conn: sqlite3.Connection, portfolio_id: int, since: str) -> list[sqlite3.Row]:
+    """Siehe get_decisions_since fuer das erwartete Format von `since`."""
+    return conn.execute(
+        "SELECT * FROM trades WHERE portfolio_id = ? AND executed_at >= ? ORDER BY executed_at ASC",
+        (portfolio_id, since),
+    ).fetchall()
+
+
+def count_deep_reflections(conn: sqlite3.Connection, portfolio_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM decisions WHERE portfolio_id = ? AND model = 'deep_reflection'",
+        (portfolio_id,),
+    ).fetchone()
+    return row["n"]
+
+
+def get_latest_reflection(conn: sqlite3.Connection, portfolio_id: int) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT * FROM decisions
+        WHERE portfolio_id = ? AND model = 'deep_reflection'
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (portfolio_id,),
+    ).fetchone()

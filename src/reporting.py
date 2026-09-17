@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.data_quality import DataQualityReport
+from src.deep_reflection_schema import DeepReflectionOutput
 from src.execution import ExecutedOrderResult
 from src.metrics import MetricsResult
 from src.risk_guardrails import ForcedStopLossAction
@@ -19,6 +20,7 @@ def generate_report(
     portfolio_commentary: str,
     metrics: MetricsResult,
     data_quality_report: DataQualityReport,
+    deep_reflection: DeepReflectionOutput | None,
     reports_dir: str,
 ) -> Path:
     lines = []
@@ -67,6 +69,21 @@ def generate_report(
     else:
         lines.append("_Keine Auffälligkeiten._")
     lines.append("")
+
+    if deep_reflection is not None:
+        lines.append("## Monatliche Tiefenreflexion (Kap. 6.12.3)")
+        if deep_reflection.theses_confirmed:
+            lines.append("**Bestätigte Thesen:**")
+            for thesis in deep_reflection.theses_confirmed:
+                lines.append(f"- {thesis}")
+        if deep_reflection.theses_falsified_or_overdue:
+            lines.append("**Widerlegte/überfällige Thesen:**")
+            for thesis in deep_reflection.theses_falsified_or_overdue:
+                lines.append(f"- {thesis}")
+        lines.append(f"**Pattern-Matching-Bedenken:** {deep_reflection.pattern_matching_concerns or '-'}")
+        lines.append(f"**Portfolio-Haltung:** {deep_reflection.portfolio_stance_assessment or '-'}")
+        lines.append(f"**Zusammenfassung:** {deep_reflection.reflection_commentary}")
+        lines.append("")
 
     if forced_actions:
         lines.append("## ⚠️ Automatische Stop-Loss-Schliessungen (dokumentationspflichtig)")
