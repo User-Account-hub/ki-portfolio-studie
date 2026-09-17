@@ -13,7 +13,7 @@ def get_trading_decision(
     user_prompt: str,
     api_key: str,
     model: str = "claude-sonnet-5",
-    max_tokens: int = 24000,
+    max_tokens: int = 32000,
 ) -> str:
     """Calls Claude and returns the raw text of its response.
 
@@ -83,6 +83,24 @@ def get_trading_decision(
     wie zuvor `client.messages.create(...)` direkt - die Extraktionslogik
     unten (Text-Bloecke joinen, stop_reason=="max_tokens" pruefen) bleibt
     unveraendert korrekt.
+
+    v7 (2026-09-17, proaktive Anpassung wegen des deutlich ausfuehrlicheren
+    v7-System-Prompts in prompt_builder.py - Zyklus-Position/Moat/Edge-Typ/
+    Wirkungsmechanismus je Empfehlung erfordern mehr Denk- und Antwort-Tokens
+    als der bisherige Prompt): `max_tokens` von 24000 auf 32000 erhoeht.
+    Erneut im SDK-Quellcode geprueft (gleiche installierte Version 1.3.0, sie
+    hat sich seit v6 nicht geaendert), ob das erneut die v6-Streaming-Grenze
+    beruehrt: `resources/messages/messages.py` zeigt, dass NUR `create()`
+    (Zeile ~948: `if not stream and ...: timeout = self._client.
+    _calculate_nonstreaming_timeout(...)`) und `parse()` (immer nicht-
+    streamend) diesen Check aufrufen. `stream()` (der hier genutzte Pfad,
+    Zeile ~1000) baut den Request direkt ohne jeden Aufruf von
+    `_calculate_nonstreaming_timeout` - unabhaengig vom `max_tokens`-Wert.
+    Der einzige generische Timeout ist `DEFAULT_TIMEOUT = httpx.Timeout(
+    timeout=600, connect=5.0)` (`_constants.py`) - das ist ein PRO-Lese-
+    Operation-Timeout (httpx-Semantik), keine Obergrenze fuer die
+    Gesamtdauer eines Streams, solange der Server weiter Chunks liefert.
+    32000 max_tokens loesen also keine erneute v6-Regression aus.
     """
     # Strips accidental whitespace/newlines from the secret (e.g. a trailing
     # "\n" from how the value was pasted into a CI secret store) - the HTTP
