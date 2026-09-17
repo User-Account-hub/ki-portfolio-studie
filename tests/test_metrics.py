@@ -37,6 +37,7 @@ def make_nav_history(
     initial_nav: float | None = None,
     historical_peak_nav: float | None = None,
     benchmark_normalized: list[float] | None = None,
+    baseline_normalized: list[float] | None = None,
 ) -> NavHistory:
     if dates is None:
         dates = list(pd.date_range("2026-01-05", periods=len(nav_values), freq="D"))
@@ -45,6 +46,8 @@ def make_nav_history(
         nav=nav_values,
         # Default = nav_values (Benchmark irrelevant fuer die meisten Tests hier).
         benchmark_normalized=benchmark_normalized if benchmark_normalized is not None else nav_values,
+        # Default = nav_values (Momentum-Baseline irrelevant fuer die meisten Tests hier).
+        baseline_normalized=baseline_normalized if baseline_normalized is not None else nav_values,
         periods_per_year=periods_per_year,
         # Default = nav_values[0]: die meisten Tests hier pruefen Annualisierung/
         # Phasenlogik, nicht total_return, und sollen sich nicht aendern, wenn
@@ -219,6 +222,29 @@ def test_compute_metrics_benchmark_total_return_uses_initial_nav_not_first_check
     assert result.benchmark_total_return_pct == pytest.approx(expected_benchmark_return)
     assert result.benchmark_total_return_pct != pytest.approx(wrong_benchmark_return)
     assert result.alpha_pct == pytest.approx(result.total_return_pct - expected_benchmark_return)
+
+
+def test_compute_metrics_baseline_total_return_uses_initial_nav_not_first_checkpoint():
+    """Kap. 6.9: baseline_total_return_pct/baseline_alpha_pct muessen wie
+    benchmark_total_return_pct gegen NavHistory.initial_nav rechnen, nicht
+    gegen baseline_normalized[0] - siehe
+    test_compute_metrics_benchmark_total_return_uses_initial_nav_not_first_checkpoint
+    fuer die analoge Benchmark-Begruendung."""
+    nav_history = make_nav_history(
+        nav_values=[969_272.89, 971_148.52],
+        periods_per_year=252,
+        initial_nav=1_000_000.0,
+        baseline_normalized=[989_384.90, 997_819.60],
+    )
+
+    result = compute_metrics(nav_history)
+
+    expected_baseline_return = 997_819.60 / 1_000_000.0 - 1
+    wrong_baseline_return = 997_819.60 / 989_384.90 - 1
+    assert expected_baseline_return < 0 < wrong_baseline_return
+    assert result.baseline_total_return_pct == pytest.approx(expected_baseline_return)
+    assert result.baseline_total_return_pct != pytest.approx(wrong_baseline_return)
+    assert result.baseline_alpha_pct == pytest.approx(result.total_return_pct - expected_baseline_return)
 
 
 def test_compute_metrics_falls_back_to_phase1_annualization_before_regime_change():

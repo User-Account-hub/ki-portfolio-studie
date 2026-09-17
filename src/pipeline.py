@@ -44,6 +44,10 @@ def run() -> None:
         s.symbol for s in watchlist.symbols if s.instrument_type in STRUCTURED_INSTRUMENT_TYPES
     }
     symbol_metadata = {s.symbol: s for s in watchlist.symbols}
+    # Kap. 6.9: Universum der regelbasierten Momentum-Baseline - reguläre
+    # Aktien des Anhang-A-Universums, ohne die gehebelten ETF-Proxies
+    # (NVDL/TSDD) und ohne strukturierte Produkte (siehe momentum_baseline.py).
+    momentum_universe_symbols = [s.symbol for s in watchlist.symbols if s.instrument_type == "equity"]
 
     broker_client = broker_alpaca.get_trading_client(app_config.alpaca_api_key, app_config.alpaca_secret_key)
 
@@ -163,7 +167,12 @@ def run() -> None:
 
         log.info("Berechne Metriken...")
         nav_history = metrics.reconstruct_nav_history(
-            conn, portfolio_row, all_trades, watchlist_underlyings, portfolio_row["benchmark_symbol"]
+            conn,
+            portfolio_row,
+            all_trades,
+            watchlist_underlyings,
+            portfolio_row["benchmark_symbol"],
+            momentum_universe_symbols=momentum_universe_symbols,
         )
         metrics_result = metrics.compute_metrics(nav_history)
 

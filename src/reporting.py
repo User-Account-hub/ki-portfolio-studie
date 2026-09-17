@@ -37,7 +37,9 @@ def generate_report(
         lines.append(f"| Sharpe Ratio | {metrics.sharpe_ratio:.2f} |")
     lines.append(f"| Max. Drawdown | {metrics.max_drawdown_pct:.2%} |")
     lines.append(f"| Benchmark-Rendite ({portfolio_row['benchmark_symbol']}) | {metrics.benchmark_total_return_pct:.2%} |")
-    lines.append(f"| Alpha vs. Benchmark | {metrics.alpha_pct:.2%} |\n")
+    lines.append(f"| Alpha vs. Benchmark | {metrics.alpha_pct:.2%} |")
+    lines.append(f"| Momentum-Baseline-Rendite (Kap. 6.9) | {metrics.baseline_total_return_pct:.2%} |")
+    lines.append(f"| Alpha vs. Momentum-Baseline | {metrics.baseline_alpha_pct:.2%} |\n")
 
     if forced_actions:
         lines.append("## ⚠️ Automatische Stop-Loss-Schliessungen (dokumentationspflichtig)")

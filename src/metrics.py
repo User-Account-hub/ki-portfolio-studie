@@ -47,6 +47,7 @@ import pandas as pd
 import yfinance as yf
 
 from src.db import get_peak_nav
+from src.momentum_baseline import reconstruct_momentum_baseline
 from src.risk_guardrails import OpenPosition, compute_nav
 
 CASH_SIGN = {"buy": -1, "sell": 1, "short": 1, "cover": -1}
@@ -65,6 +66,11 @@ class NavHistory:
     dates: list[pd.Timestamp]
     nav: list[float]
     benchmark_normalized: list[float]
+    # Regelbasierte Momentum-Baseline (Thesis Kap. 6.9, nicht-KI-Vergleichsarm):
+    # Top-Quintil 12-Wochen-Performance aus dem Aktien-Universum, gleichgewichtet,
+    # monatlich rebalanciert - aus Kursdaten rekonstruiert wie benchmark_normalized,
+    # kein separat gehandeltes Portfolio. Siehe src/momentum_baseline.py.
+    baseline_normalized: list[float]
     # Checkpoints/Jahr, abgeleitet aus den `freqs` von reconstruct_nav_history -
     # treibt die Annualisierung in compute_metrics (Volatilitaet, Sharpe).
     periods_per_year: float
@@ -99,6 +105,8 @@ class MetricsResult:
     max_drawdown_pct: float
     benchmark_total_return_pct: float
     alpha_pct: float
+    baseline_total_return_pct: float
+    baseline_alpha_pct: float
 
 
 def _replay_ledger(trades: list[sqlite3.Row], initial_cash: float) -> list[dict]:
@@ -150,12 +158,16 @@ def _price_lookup_symbols(snapshots: list[dict], watchlist_underlyings: dict[str
     return sorted(symbols)
 
 
+MOMENTUM_BASELINE_LOOKBACK_WEEKS = 12
+
+
 def reconstruct_nav_history(
     conn: sqlite3.Connection,
     portfolio_row: sqlite3.Row,
     trades: list[sqlite3.Row],
     watchlist_underlyings: dict[str, str],
     benchmark_symbol: str,
+    momentum_universe_symbols: list[str] | None = None,
     freqs: tuple[str, ...] = ("W-MON", "W-THU"),
     phase2_start: pd.Timestamp = PHASE2_START,
 ) -> NavHistory:
@@ -169,9 +181,15 @@ def reconstruct_nav_history(
 
     Checkpoints before `phase2_start` follow `freqs` (Phase 1, 2x/week);
     checkpoints from `phase2_start` onward are every business day (Phase 2,
-    daily), reflecting the Kap.-6.3 regime change to daily trading."""
+    daily), reflecting the Kap.-6.3 regime change to daily trading.
+
+    `momentum_universe_symbols` (Thesis Kap. 6.9) is the equity universe the
+    regelbasierte Momentum-Baseline ranks/rebalances over - independent of
+    the AI portfolio's actual trades, computed purely from price data (see
+    src/momentum_baseline.py)."""
     initial_cash = portfolio_row["initial_cash_balance"]
     periods_per_year = 52 * len(freqs)
+    momentum_universe_symbols = momentum_universe_symbols or []
     # `conn` wird hier (bisher ungenutzt) fuer genau diesen Zweck gebraucht:
     # der Circuit-Breaker (risk_guardrails.py, Kap. 6.8) pflegt bereits den
     # wahren historischen NAV-Hoechststand ueber alle Laeufe hinweg - den
@@ -183,6 +201,7 @@ def reconstruct_nav_history(
             dates=[pd.Timestamp.today()],
             nav=[initial_cash],
             benchmark_normalized=[initial_cash],
+            baseline_normalized=[initial_cash],
             periods_per_year=periods_per_year,
             initial_nav=initial_cash,
             historical_peak_nav=historical_peak_nav,
@@ -204,10 +223,19 @@ def reconstruct_nav_history(
     if len(checkpoints) == 0 or checkpoints[-1] < end:
         checkpoints = checkpoints.append(pd.DatetimeIndex([end]))
 
-    price_symbols = sorted(set(_price_lookup_symbols(snapshots, watchlist_underlyings)) | {benchmark_symbol})
+    price_symbols = sorted(
+        set(_price_lookup_symbols(snapshots, watchlist_underlyings))
+        | {benchmark_symbol}
+        | set(momentum_universe_symbols)
+    )
+    # Der Momentum-Baseline-Rebalance am allerersten Termin (`start`) braucht
+    # bereits `MOMENTUM_BASELINE_LOOKBACK_WEEKS` Kurshistorie VOR `start`, um
+    # die erste Rangliste ohne Lookahead zu bilden - der Download-Beginn muss
+    # entsprechend weiter zurueckreichen als die bisherigen 7 Tage Puffer.
+    download_start = start - pd.Timedelta(weeks=MOMENTUM_BASELINE_LOOKBACK_WEEKS, days=7)
     history = yf.download(
         tickers=price_symbols,
-        start=start - pd.Timedelta(days=7),
+        start=download_start,
         end=end + pd.Timedelta(days=1),
         interval="1d",
         group_by="ticker",
@@ -255,10 +283,23 @@ def reconstruct_nav_history(
         else:
             benchmark_normalized.append(initial_cash * (price / benchmark_start_price))
 
+    # Kap. 6.9: regelbasierte Momentum-Baseline, rein aus Kursdaten
+    # rekonstruiert (kein separat gehandeltes Portfolio) - no-op (flache Linie
+    # bei initial_cash) falls kein Universum uebergeben wurde.
+    baseline_normalized = reconstruct_momentum_baseline(
+        price_on=price_on,
+        universe_symbols=momentum_universe_symbols,
+        dates=dates,
+        start=start,
+        initial_cash=initial_cash,
+        lookback_weeks=MOMENTUM_BASELINE_LOOKBACK_WEEKS,
+    ) if momentum_universe_symbols else [initial_cash] * len(dates)
+
     return NavHistory(
         dates=dates,
         nav=nav_values,
         benchmark_normalized=benchmark_normalized,
+        baseline_normalized=baseline_normalized,
         periods_per_year=periods_per_year,
         initial_nav=initial_cash,
         historical_peak_nav=historical_peak_nav,
@@ -333,6 +374,13 @@ def compute_metrics(
     # aussagekraeftig).
     benchmark_total_return = float(benchmark.iloc[-1] / nav_history.initial_nav - 1)
 
+    # Kap. 6.9: baseline_total_return/baseline_alpha_pct sind architektonisch
+    # identisch zu benchmark_total_return/alpha_pct - selbe initial_nav-
+    # Ankerung (Details siehe Bugfix-Kommentar oben), nur gegen die
+    # Momentum-Baseline-Zeitreihe statt der Index-Benchmark.
+    baseline = pd.Series(nav_history.baseline_normalized, index=nav_history.dates)
+    baseline_total_return = float(baseline.iloc[-1] / nav_history.initial_nav - 1)
+
     return MetricsResult(
         current_nav=float(nav.iloc[-1]),
         total_return_pct=float(total_return),
@@ -342,4 +390,6 @@ def compute_metrics(
         max_drawdown_pct=max_drawdown,
         benchmark_total_return_pct=benchmark_total_return,
         alpha_pct=float(total_return - benchmark_total_return),
+        baseline_total_return_pct=baseline_total_return,
+        baseline_alpha_pct=float(total_return - baseline_total_return),
     )
