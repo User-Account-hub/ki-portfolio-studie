@@ -17,6 +17,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestTradeRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import TimeInForce
@@ -39,6 +41,28 @@ class FillResult:
 
 def get_trading_client(api_key: str, secret_key: str) -> TradingClient:
     return TradingClient(api_key, secret_key, paper=True)
+
+
+def get_market_data_client(api_key: str, secret_key: str) -> StockHistoricalDataClient:
+    """Alpaca trennt Markt-Daten- von Trading-Endpunkten in zwei Client-
+    Klassen, auch wenn dasselbe API-Key-Paar beide authentifiziert. Wird nur
+    fuer den Datenqualitaets-Kursvergleich (2026-09-17, siehe data_quality.py)
+    gebraucht, nicht fuer Order-Ausfuehrung."""
+    return StockHistoricalDataClient(api_key, secret_key)
+
+
+def get_latest_trade_prices(data_client: StockHistoricalDataClient, symbols: list[str]) -> dict[str, float]:
+    """Letzter gehandelter Preis je Symbol direkt von Alpaca (nicht
+    yfinance) - Grundlage fuer data_quality.compare_source_prices'
+    Stichproben-Kursvergleich. Symbole, die Alpaca nicht kennt (z.B. ein
+    Tippfehler oder ein delistetes Papier), fehlen im Ergebnis-Dict statt
+    einen Fehler auszuloesen - der Aufrufer vergleicht ohnehin nur Symbole,
+    fuer die BEIDE Quellen einen Preis liefern."""
+    if not symbols:
+        return {}
+    request = StockLatestTradeRequest(symbol_or_symbols=symbols)
+    trades = data_client.get_stock_latest_trade(request)
+    return {symbol: float(trade.price) for symbol, trade in trades.items()}
 
 
 def is_trading_day(client: TradingClient) -> bool:

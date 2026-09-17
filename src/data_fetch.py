@@ -101,6 +101,49 @@ def fetch_market_snapshots(
     return snapshots
 
 
+def fetch_price_histories(
+    symbols: list[str],
+    lookback_days: int = 90,
+    known_unresolvable_symbols: set[str] | None = None,
+) -> dict[str, pd.Series]:
+    """Fetches recent daily close-price history per symbol - used by
+    data_quality.py's gap/outlier detection (2026-09-17). Deliberately a
+    separate yfinance download from fetch_market_snapshots above (accepted
+    duplication, consistent with metrics.reconstruct_nav_history's own
+    independent download elsewhere in this project) rather than refactoring
+    that already-incident-prone function to also return raw series.
+    """
+    if not symbols:
+        return {}
+
+    yf_logger = logging.getLogger(_YFINANCE_LOGGER_NAME)
+    downgrade_filter = _DowngradeKnownUnresolvableSymbols(known_unresolvable_symbols or set())
+    yf_logger.addFilter(downgrade_filter)
+    try:
+        data = yf.download(
+            tickers=symbols,
+            period=f"{lookback_days}d",
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
+    finally:
+        yf_logger.removeFilter(downgrade_filter)
+
+    histories: dict[str, pd.Series] = {}
+    for symbol in symbols:
+        try:
+            series = data[symbol] if len(symbols) > 1 else data
+            close = series["Close"].dropna()
+            if not close.empty:
+                histories[symbol] = close
+        except (KeyError, IndexError):
+            continue  # Symbol nicht auf yfinance auflösbar (z.B. strukturiertes Produkt)
+    return histories
+
+
 def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
     """Lightweight helper returning just last close prices, used by risk checks."""
     snapshots = fetch_market_snapshots(symbols, lookback_days=5)

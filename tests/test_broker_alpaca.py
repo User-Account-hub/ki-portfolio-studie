@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime
 from types import SimpleNamespace
 
-from src.broker_alpaca import is_trading_day, submit_equity_order
+from src.broker_alpaca import get_latest_trade_prices, is_trading_day, submit_equity_order
 
 
 def make_order(order_id="order-1", status="new", filled_qty=None, filled_avg_price=None):
@@ -198,3 +198,47 @@ def test_is_trading_day_false_on_a_market_holiday():
     labor_day = datetime.date(2026, 9, 7)
     client = FakeCalendarClient(today=labor_day, calendar_entries=[])
     assert is_trading_day(client) is False
+
+
+# --- get_latest_trade_prices (2026-09-17, Datenqualitaets-Kursvergleich) ------
+
+
+class FakeDataClient:
+    """Stands in for alpaca.data.historical.StockHistoricalDataClient -
+    get_stock_latest_trade() normally returns a dict[symbol, Trade], here a
+    dict[symbol, SimpleNamespace(price=...)] is enough."""
+
+    def __init__(self, trades_by_symbol: dict):
+        self._trades_by_symbol = trades_by_symbol
+        self.requested_symbols: list = []
+
+    def get_stock_latest_trade(self, request):
+        self.requested_symbols = list(request.symbol_or_symbols)
+        return self._trades_by_symbol
+
+
+def test_get_latest_trade_prices_extracts_price_per_symbol():
+    client = FakeDataClient(
+        {
+            "AAPL": SimpleNamespace(price=150.25),
+            "MSFT": SimpleNamespace(price=420.0),
+        }
+    )
+    prices = get_latest_trade_prices(client, ["AAPL", "MSFT"])
+    assert prices == {"AAPL": 150.25, "MSFT": 420.0}
+    assert client.requested_symbols == ["AAPL", "MSFT"]
+
+
+def test_get_latest_trade_prices_empty_symbol_list_short_circuits():
+    client = FakeDataClient({})
+    assert get_latest_trade_prices(client, []) == {}
+    assert client.requested_symbols == []  # get_stock_latest_trade nie aufgerufen
+
+
+def test_get_latest_trade_prices_omits_symbols_alpaca_does_not_know():
+    """Alpaca liefert im Ergebnis-Dict nur die Symbole, die es kennt - ein
+    angefragtes, aber unbekanntes Symbol fehlt einfach, statt einen Fehler
+    auszuloesen."""
+    client = FakeDataClient({"AAPL": SimpleNamespace(price=150.0)})
+    prices = get_latest_trade_prices(client, ["AAPL", "UNKNOWN_SYMBOL"])
+    assert prices == {"AAPL": 150.0}

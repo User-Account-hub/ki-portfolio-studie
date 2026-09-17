@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from src.data_quality import DataQualityReport
 from src.execution import ExecutedOrderResult
 from src.metrics import MetricsResult
 from src.risk_guardrails import ForcedStopLossAction
@@ -17,6 +18,7 @@ def generate_report(
     forced_actions: list[ForcedStopLossAction],
     portfolio_commentary: str,
     metrics: MetricsResult,
+    data_quality_report: DataQualityReport,
     reports_dir: str,
 ) -> Path:
     lines = []
@@ -40,6 +42,31 @@ def generate_report(
     lines.append(f"| Alpha vs. Benchmark | {metrics.alpha_pct:.2%} |")
     lines.append(f"| Momentum-Baseline-Rendite (Kap. 6.9) | {metrics.baseline_total_return_pct:.2%} |")
     lines.append(f"| Alpha vs. Momentum-Baseline | {metrics.baseline_alpha_pct:.2%} |\n")
+
+    lines.append("## Datenqualität")
+    if data_quality_report.has_findings:
+        if data_quality_report.price_deviations:
+            lines.append("**Kursabweichungen yfinance vs. Alpaca (Stichprobe, >1%):**")
+            lines.append("| Symbol | yfinance | Alpaca | Abweichung |")
+            lines.append("|---|---|---|---|")
+            for d in data_quality_report.price_deviations:
+                lines.append(
+                    f"| {d.symbol} | {d.yfinance_price:.2f} | {d.alpaca_price:.2f} | {d.deviation_pct:+.2%} |"
+                )
+            lines.append("")
+        if data_quality_report.missing_trading_days:
+            lines.append("**Fehlende Handelstage (yfinance-Kurshistorie):**")
+            for issue in data_quality_report.missing_trading_days:
+                lines.append(f"- **{issue.symbol}**: {issue.detail}")
+            lines.append("")
+        if data_quality_report.outlier_moves:
+            lines.append("**Ausreisser-Tagesbewegungen (möglicher Datenfehler):**")
+            for issue in data_quality_report.outlier_moves:
+                lines.append(f"- **{issue.symbol}**: {issue.detail}")
+            lines.append("")
+    else:
+        lines.append("_Keine Auffälligkeiten._")
+    lines.append("")
 
     if forced_actions:
         lines.append("## ⚠️ Automatische Stop-Loss-Schliessungen (dokumentationspflichtig)")

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from src import broker_alpaca, data_fetch, db, execution, metrics, reporting
+from src import broker_alpaca, data_fetch, data_quality, db, execution, metrics, reporting
 from src.claude_client import get_trading_decision
 from src.config import AppConfig, RiskConfig, Watchlist
 from src.order_schema import STRUCTURED_INSTRUMENT_TYPES, OrderParsingError, parse_orders_from_json
@@ -31,6 +31,45 @@ from src.risk_guardrails import compute_nav
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("pipeline")
+
+
+def _run_data_quality_checks(
+    app_config: AppConfig,
+    tradable_symbols: list[str],
+    structured_product_symbols: set[str],
+    yfinance_prices: dict[str, float],
+) -> data_quality.DataQualityReport:
+    """Datenqualitäts-Check (2026-09-17): (1) Kursvergleich yfinance vs.
+    Alpaca (Stichprobe), (2) Lücken-/Ausreisser-Erkennung in den yfinance-
+    Kurshistorien - siehe src/data_quality.py für die eigentliche Logik.
+
+    Bewusst so gebaut, dass WEDER ein gefundenes Datenqualitätsproblem NOCH
+    ein Fehler dieses Checks selbst (z.B. Alpaca-Marktdaten-Endpunkt down)
+    den Pipeline-Lauf abbricht - ein Datenqualitätsproblem ist ein
+    Beobachtungssignal für Log/Report, kein Grund, einen ansonsten gültigen
+    Lauf zu verwerfen.
+    """
+    sample_symbols = data_quality.select_price_comparison_sample(
+        [s for s in tradable_symbols if s in yfinance_prices]
+    )
+    alpaca_prices = {}
+    try:
+        data_client = broker_alpaca.get_market_data_client(
+            app_config.alpaca_api_key, app_config.alpaca_secret_key
+        )
+        alpaca_prices = broker_alpaca.get_latest_trade_prices(data_client, sample_symbols)
+    except Exception:
+        log.exception("Alpaca-Kursvergleich (Datenqualität) fehlgeschlagen - wird übersprungen.")
+
+    price_histories = {}
+    try:
+        price_histories = data_fetch.fetch_price_histories(
+            tradable_symbols, known_unresolvable_symbols=structured_product_symbols
+        )
+    except Exception:
+        log.exception("Kurshistorien-Abruf (Datenqualität) fehlgeschlagen - wird übersprungen.")
+
+    return data_quality.build_report(yfinance_prices, alpaca_prices, price_histories)
 
 
 def run() -> None:
@@ -67,6 +106,14 @@ def run() -> None:
             price_lookup_symbols, known_unresolvable_symbols=structured_product_symbols
         )
         current_prices = {s: snap.last_price for s, snap in snapshots.items()}
+
+        log.info("Führe Datenqualitäts-Checks durch (yfinance vs. Alpaca, Lücken/Ausreisser)...")
+        tradable_symbols = [s for s in price_lookup_symbols if s not in structured_product_symbols]
+        dq_report = _run_data_quality_checks(
+            app_config, tradable_symbols, structured_product_symbols, current_prices
+        )
+        for line in dq_report.log_lines():
+            log.warning("Datenqualität: %s", line)
 
         start_of_run_nav = compute_nav(
             portfolio_row["cash_balance"],
@@ -183,6 +230,7 @@ def run() -> None:
             forced_actions,
             portfolio_commentary,
             metrics_result,
+            dq_report,
             app_config.reports_dir,
         )
         log.info("Report geschrieben: %s", report_path)
