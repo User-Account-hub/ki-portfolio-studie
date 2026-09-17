@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 
 import anthropic
 
@@ -85,22 +84,10 @@ def get_trading_decision(
     unten (Text-Bloecke joinen, stop_reason=="max_tokens" pruefen) bleibt
     unveraendert korrekt.
     """
-    # TEMP DEBUG (see task: httpcore.LocalProtocolError persists after strip()).
-    # Never print the key itself - only length/whitespace metadata - so this
-    # is safe to leave in a CI log. Remove once the root cause is confirmed.
-    stripped_key = api_key.strip()
-    print(
-        "[DEBUG anthropic key] "
-        f"raw_len={len(api_key)} stripped_len={len(stripped_key)} "
-        f"raw_has_newline={chr(10) in api_key} raw_has_cr={chr(13) in api_key} "
-        f"stripped_has_newline={chr(10) in stripped_key} stripped_has_cr={chr(13) in stripped_key}",
-        file=sys.stderr,
-    )
-
     # Strips accidental whitespace/newlines from the secret (e.g. a trailing
     # "\n" from how the value was pasted into a CI secret store) - the HTTP
     # client rejects header values containing raw newlines outright.
-    client = anthropic.Anthropic(api_key=stripped_key)
+    client = anthropic.Anthropic(api_key=api_key.strip())
     # v6: `.stream()` statt `.create()` - siehe Docstring oben. `max_tokens`
     # und `effort` bleiben unveraendert (v5), nur der Transportweg aendert sich.
     with client.messages.stream(
