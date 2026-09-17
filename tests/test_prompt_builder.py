@@ -7,8 +7,13 @@ from __future__ import annotations
 
 import json
 
+from src.boundary_conditions import BoundaryConditionCheck
 from src.config import RiskConfig, Watchlist, WatchlistSymbol
-from src.prompt_builder import _summarize_reflection_for_prompt, build_user_prompt
+from src.prompt_builder import (
+    _summarize_boundary_condition,
+    _summarize_reflection_for_prompt,
+    build_user_prompt,
+)
 
 
 def make_risk_config(**overrides) -> RiskConfig:
@@ -80,11 +85,14 @@ def test_summarize_reflection_returns_none_when_raw_response_missing():
 # --- build_user_prompt integration ------------------------------------------
 
 
-def _build_minimal_prompt(latest_reflection):
+def _build_minimal_prompt(latest_reflection=None, triggered_boundary_conditions=None, still_open_boundary_conditions=None):
     portfolio_row = {"name": "test", "currency": "USD", "cash_balance": 100_000.0, "benchmark_symbol": "SPY"}
     watchlist = Watchlist(benchmark_symbol="SPY", symbols=[WatchlistSymbol(symbol="AAPL", instrument_type="equity")])
     return build_user_prompt(
-        portfolio_row, [], watchlist, {}, make_risk_config(), latest_reflection=latest_reflection
+        portfolio_row, [], watchlist, {}, make_risk_config(),
+        latest_reflection=latest_reflection,
+        triggered_boundary_conditions=triggered_boundary_conditions,
+        still_open_boundary_conditions=still_open_boundary_conditions,
     )
 
 
@@ -109,3 +117,45 @@ def test_build_user_prompt_includes_reflection_summary_when_present():
     prompt = _build_minimal_prompt(latest_reflection=row)
     payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
     assert payload["latest_deep_reflection"]["theses_falsified_or_overdue"] == ["CCJ überfällig"]
+
+
+# --- Randbedingungen (Kap. 7) -------------------------------------------------
+
+
+def test_summarize_boundary_condition_excludes_internal_ids():
+    cond = BoundaryConditionCheck(
+        id=1, position_id=10, symbol="NVDA", description="Fällt unter $150",
+        check_type="price_below", threshold_price=150.0,
+    )
+    summary = _summarize_boundary_condition(cond)
+    assert summary == {
+        "symbol": "NVDA", "description": "Fällt unter $150",
+        "check_type": "price_below", "threshold_price": 150.0,
+    }
+    assert "id" not in summary
+    assert "position_id" not in summary
+
+
+def test_build_user_prompt_defaults_boundary_conditions_to_empty_lists():
+    prompt = _build_minimal_prompt()
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["boundary_conditions"] == {"triggered_this_run": [], "still_open": []}
+
+
+def test_build_user_prompt_includes_boundary_condition_status():
+    triggered = [
+        BoundaryConditionCheck(
+            id=1, position_id=10, symbol="NVDA", description="Fällt unter $150",
+            check_type="price_below", threshold_price=150.0,
+        )
+    ]
+    still_open = [
+        BoundaryConditionCheck(
+            id=2, position_id=11, symbol="CCJ", description="Q3-Earnings enttäuschen",
+            check_type="qualitative", threshold_price=None,
+        )
+    ]
+    prompt = _build_minimal_prompt(triggered_boundary_conditions=triggered, still_open_boundary_conditions=still_open)
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["boundary_conditions"]["triggered_this_run"][0]["symbol"] == "NVDA"
+    assert payload["boundary_conditions"]["still_open"][0]["symbol"] == "CCJ"

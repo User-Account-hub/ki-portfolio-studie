@@ -255,3 +255,68 @@ def test_execute_forced_stop_loss_actions_does_not_crash_on_structured_product()
     ).fetchone()
     assert position["status"] == "closed"
     assert position["closure_reason"] == "short_stop_loss_forced"
+
+
+# --- boundary_conditions (Kap. 7, 2026-09-17) --------------------------------
+
+
+def test_execute_proposed_orders_stores_boundary_conditions_on_buy():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1",
+        instrument_type="mini_future",
+        underlying_symbol="NVDA",
+        side="buy",
+        notional=4_000.0,
+        rationale="test",
+        boundary_conditions=[
+            {"description": "Fällt unter $150", "check_type": "price_below", "threshold_price": 150.0},
+            {"description": "Fed pausiert Zinssenkungen", "check_type": "qualitative"},
+        ],
+    )
+
+    execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+    )
+
+    rows = conn.execute(
+        "SELECT * FROM boundary_conditions WHERE portfolio_id = ? ORDER BY id", (portfolio["id"],)
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["check_type"] == "price_below"
+    assert rows[0]["threshold_price"] == 150.0
+    assert rows[0]["status"] == "open"
+    assert rows[1]["check_type"] == "qualitative"
+    assert rows[1]["threshold_price"] is None
+    # Beide an dieselbe (neu eroeffnete) Position gebunden.
+    assert rows[0]["position_id"] == rows[1]["position_id"]
+
+
+def test_execute_proposed_orders_without_boundary_conditions_stores_nothing():
+    """Optional/best-effort: eine Order ohne genannte Randbedingung darf
+    keine Zeilen erzeugen und keinen Fehler verursachen."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",
+    )
+
+    execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"NVDA": 100.0}, start_of_run_nav=100_000.0,
+        broker_client=None,
+    )
+
+    rows = conn.execute(
+        "SELECT * FROM boundary_conditions WHERE portfolio_id = ?", (portfolio["id"],)
+    ).fetchall()
+    assert rows == []

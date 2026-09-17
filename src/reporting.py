@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from src.boundary_conditions import BoundaryConditionCheck
 from src.data_quality import DataQualityReport
 from src.deep_reflection_schema import DeepReflectionOutput
 from src.execution import ExecutedOrderResult
@@ -21,6 +22,8 @@ def generate_report(
     metrics: MetricsResult,
     data_quality_report: DataQualityReport,
     deep_reflection: DeepReflectionOutput | None,
+    triggered_boundary_conditions: list[BoundaryConditionCheck],
+    still_open_boundary_conditions: list[BoundaryConditionCheck],
     reports_dir: str,
 ) -> Path:
     lines = []
@@ -68,6 +71,20 @@ def generate_report(
             lines.append("")
     else:
         lines.append("_Keine Auffälligkeiten._")
+    lines.append("")
+
+    lines.append("## Randbedingungen (Kap. 7)")
+    if triggered_boundary_conditions:
+        lines.append("**Ausgelöst in diesem Lauf:**")
+        for c in triggered_boundary_conditions:
+            lines.append(f"- **{c.symbol}**: {c.description}")
+    if still_open_boundary_conditions:
+        lines.append("**Weiterhin offen:**")
+        for c in still_open_boundary_conditions:
+            note = "nicht automatisch prüfbar" if c.check_type == "qualitative" else f"Schwelle {c.threshold_price:.2f}"
+            lines.append(f"- **{c.symbol}** ({note}): {c.description}")
+    if not triggered_boundary_conditions and not still_open_boundary_conditions:
+        lines.append("_Keine offenen Randbedingungen._")
     lines.append("")
 
     if deep_reflection is not None:

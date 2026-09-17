@@ -322,3 +322,154 @@ def test_insert_trade_records_explicit_transaction_cost():
     row = conn.execute("SELECT transaction_cost, notional FROM trades WHERE id = ?", (trade_id,)).fetchone()
     assert row["transaction_cost"] == 1.5
     assert row["notional"] == 1500.0  # unveraendert - Kosten fliessen NICHT ins notional ein
+
+
+# --- Randbedingungs-Tracking (Kap. 7, 2026-09-17) -------------------------------
+
+
+def make_open_position(conn: sqlite3.Connection, portfolio_id: int, symbol: str = "NVDA") -> int:
+    return db.upsert_open_position(
+        conn, portfolio_id=portfolio_id, symbol=symbol, instrument_type="equity",
+        underlying_symbol=None, side="long", delta_quantity=10.0, fill_price=100.0,
+    )
+
+
+def test_ensure_boundary_conditions_table_is_idempotent():
+    conn = make_conn()
+    db.ensure_boundary_conditions_table(conn)
+    db.ensure_boundary_conditions_table(conn)
+
+    portfolio_id = make_portfolio(conn)
+    position_id = make_open_position(conn, portfolio_id)
+    cond_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="test", check_type="qualitative", threshold_price=None,
+    )
+    assert cond_id is not None
+
+
+def test_ensure_boundary_conditions_table_on_db_without_it():
+    """Simuliert eine bereits deployte DB ohne die boundary_conditions-
+    Tabelle (aeltere schema.sql-Version): Tabelle fehlt zunaechst komplett,
+    muss aber sauber nachgezogen werden, ohne bestehende Daten anzutasten."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    old_schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    without_table = old_schema.split("CREATE TABLE IF NOT EXISTS boundary_conditions")[0]
+    conn.executescript(without_table)
+
+    with pytest.raises(sqlite3.OperationalError):
+        conn.execute("SELECT * FROM boundary_conditions").fetchone()
+
+    portfolio_id = make_portfolio(conn, initial_cash=250_000.0)
+    db.ensure_boundary_conditions_table(conn)  # Migration
+
+    row = conn.execute("SELECT * FROM portfolios WHERE id = ?", (portfolio_id,)).fetchone()
+    assert row["cash_balance"] == 250_000.0  # unveraendert
+
+    position_id = make_open_position(conn, portfolio_id)
+    cond_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="test", check_type="qualitative", threshold_price=None,
+    )
+    assert cond_id is not None
+
+
+def test_get_open_boundary_conditions_excludes_triggered_and_closed():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    position_id = make_open_position(conn, portfolio_id)
+    open_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="offen", check_type="qualitative", threshold_price=None,
+    )
+    triggered_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="ausgeloest", check_type="price_below", threshold_price=100.0,
+    )
+    db.mark_boundary_conditions_triggered(conn, [triggered_id])
+
+    rows = db.get_open_boundary_conditions(conn, portfolio_id)
+    assert [r["id"] for r in rows] == [open_id]
+
+
+def test_mark_boundary_conditions_triggered_sets_status_and_timestamp():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    position_id = make_open_position(conn, portfolio_id)
+    cond_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="test", check_type="price_below", threshold_price=100.0,
+    )
+    db.mark_boundary_conditions_triggered(conn, [cond_id])
+
+    row = conn.execute("SELECT * FROM boundary_conditions WHERE id = ?", (cond_id,)).fetchone()
+    assert row["status"] == "triggered"
+    assert row["triggered_at"] is not None
+
+
+def test_mark_boundary_conditions_triggered_empty_list_is_noop():
+    conn = make_conn()
+    db.mark_boundary_conditions_triggered(conn, [])  # darf nicht crashen
+
+
+def test_close_boundary_conditions_for_position_only_touches_open_ones():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    position_id = make_open_position(conn, portfolio_id)
+    open_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="offen", check_type="qualitative", threshold_price=None,
+    )
+    triggered_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="ausgeloest", check_type="price_below", threshold_price=100.0,
+    )
+    db.mark_boundary_conditions_triggered(conn, [triggered_id])
+
+    db.close_boundary_conditions_for_position(conn, position_id)
+
+    open_row = conn.execute("SELECT status FROM boundary_conditions WHERE id = ?", (open_id,)).fetchone()
+    triggered_row = conn.execute("SELECT status FROM boundary_conditions WHERE id = ?", (triggered_id,)).fetchone()
+    assert open_row["status"] == "closed_with_position"
+    assert triggered_row["status"] == "triggered"  # bereits ausgeloest, bleibt unveraendert
+
+
+def test_reduce_or_close_position_closes_boundary_conditions_on_full_close():
+    """Integrationstest des Hooks in reduce_or_close_position: eine
+    vollstaendig geschlossene Position darf keine offene Randbedingung mehr
+    hinterlassen - unabhaengig vom Schliessungsgrund."""
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    position_id = make_open_position(conn, portfolio_id)
+    cond_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="offen", check_type="qualitative", threshold_price=None,
+    )
+
+    db.reduce_or_close_position(
+        conn, position_id, delta_quantity=10.0, fill_price=110.0, closure_reason="claude_decision"
+    )
+
+    row = conn.execute("SELECT status FROM boundary_conditions WHERE id = ?", (cond_id,)).fetchone()
+    assert row["status"] == "closed_with_position"
+
+
+def test_reduce_or_close_position_partial_reduction_keeps_conditions_open():
+    """Eine Teil-Reduktion schliesst die Position NICHT - die genannte
+    These/Randbedingung gilt fuer den verbleibenden Rest weiter."""
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    position_id = make_open_position(conn, portfolio_id)  # quantity=10
+    cond_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="offen", check_type="qualitative", threshold_price=None,
+    )
+
+    db.reduce_or_close_position(
+        conn, position_id, delta_quantity=4.0, fill_price=110.0, closure_reason="claude_decision"
+    )
+
+    row = conn.execute("SELECT status FROM boundary_conditions WHERE id = ?", (cond_id,)).fetchone()
+    assert row["status"] == "open"

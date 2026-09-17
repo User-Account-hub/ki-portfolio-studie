@@ -22,6 +22,18 @@ from src.data_fetch import MarketSnapshot
 # Pattern-Matching). Grund: die bisherigen Reports begruenden Kaeufe fast
 # durchgehend allein mit "Momentum"/SMA20/50 (siehe reports/*.md) - das ist
 # nicht die intendierte analytische Tiefe der Fallstudie.
+#
+# Prompt-Versionswechsel v8 (2026-09-17, Thesis Kap. 7): siebte Anforderung
+# "RANDBEDINGUNGEN" ergaenzt - fuer jede Kauf-/Short-Empfehlung soll Claude
+# mindestens eine konkrete Randbedingung nennen, deren Eintreten die These
+# bestaetigen oder entkraeften wuerde, wo moeglich als pruefbare Kursschwelle
+# statt nur als Fliesstext. Optional/best-effort (kein Pflichtfeld, siehe
+# order_schema.BoundaryCondition) - keine Order wird allein deswegen
+# abgelehnt. Kursschwellen-Randbedingungen werden bei jedem Lauf mechanisch
+# geprueft (boundary_conditions.py), solange die zugehoerige Position offen
+# ist; qualitative (nicht kursbasierte) Randbedingungen werden dokumentiert,
+# aber nicht automatisch verifiziert - siehe dortigen Modul-Docstring fuer
+# die Begruendung, warum eine vorgetaeuschte Automatisierung vermieden wird.
 SYSTEM_PROMPT = """\
 Du bist der Portfolio-Analyst einer KI-gestützten Portfolio-Fallstudie im Paper-Trading-Modus \
 (kein echtes Geld). Du erhältst den aktuellen Portfolio-Zustand und Marktdaten für ein festes \
@@ -29,7 +41,7 @@ Anlage-Universum und schlägst darauf basierend Handelsentscheidungen vor.
 
 Deine Analyse und jede Kaufempfehlung müssen auf einer nachvollziehbaren, testbaren \
 Anlagethese basieren - nicht auf reinem Kurs-Momentum oder einer unspezifizierten \
-Renditemaximierung. Es gelten sechs Anforderungen:
+Renditemaximierung. Es gelten sieben Anforderungen:
 
 1. ZYKLUS-POSITION
    Ordne jeden vorgeschlagenen Titel explizit in eine der historischen Zyklusphasen \
@@ -64,6 +76,16 @@ Positionen ohne übergeordnete Logik vermeiden.
    Eine Begründung, die sich ausschliesslich auf SMA20/50 stützt, erfüllt diese \
 Anforderungen NICHT. Technische Indikatoren nur unterstützend.
 
+7. RANDBEDINGUNGEN (KAP. 7)
+   Nenne für jede Kauf-/Short-Empfehlung mindestens eine konkrete Randbedingung, \
+deren Eintreten deine These bestätigen oder entkräften würde. Formuliere sie, wo \
+möglich, als prüfbare Kursschwelle (Feld "check_type": "price_above"/"price_below" \
+mit "threshold_price") statt als reinen Fliesstext - das ermöglicht eine \
+automatische Prüfung bei jedem Lauf. Ist die Randbedingung nicht sinnvoll in eine \
+Kursschwelle übersetzbar (z.B. ein Makro- oder Earnings-Ereignis), gib \
+"check_type": "qualitative" an - sie wird dann dokumentiert und dir bei künftigen \
+Läufen erneut vorgelegt, aber nicht automatisch verifiziert.
+
 Wichtige Rahmenbedingungen:
 - Du darfst NUR Symbole aus dem gelieferten Universum vorschlagen.
 - Long- und Short-Positionen auf Aktien/ETFs sind erlaubt, ebenso strukturierte Produkte \
@@ -93,6 +115,13 @@ JSON-Ausgabeschema:
       "limit_price": number,          // Pflicht wenn order_type = limit
       "underlying_symbol": "string",  // Pflicht bei strukturierten Produkten
       "stop_loss_price": number,      // empfohlen bei "short"
+      "boundary_conditions": [         // optional, mind. eine bei buy/short empfohlen (Kap. 7)
+        {
+          "description": "string - kurz, was genau eintreten müsste",
+          "check_type": "price_above|price_below|qualitative",
+          "threshold_price": number    // Pflicht bei price_above/price_below
+        }
+      ],
       "rationale": "string - kurze Begründung"
     }
   ],
@@ -111,6 +140,8 @@ def build_user_prompt(
     snapshots: dict[str, MarketSnapshot],
     risk_config: RiskConfig,
     latest_reflection=None,
+    triggered_boundary_conditions: list | None = None,
+    still_open_boundary_conditions: list | None = None,
 ) -> str:
     portfolio_state = {
         "name": portfolio_row["name"],
@@ -182,6 +213,15 @@ def build_user_prompt(
         # taeglichen Prompt, damit ihre Erkenntnisse tatsaechlich nachwirken
         # statt nur im Report zu stehen.
         "latest_deep_reflection": _summarize_reflection_for_prompt(latest_reflection),
+        # Kap. 7: Randbedingungs-Tracking (siehe boundary_conditions.py) -
+        # "triggered" sind die in DIESEM Lauf ausgeloesten (Kurs hat die
+        # genannte Schwelle erreicht), "still_open" alle weiterhin
+        # unausgeloesten (inkl. qualitativer, nie automatisch geprueften)
+        # Randbedingungen zu noch offenen Positionen.
+        "boundary_conditions": {
+            "triggered_this_run": [_summarize_boundary_condition(c) for c in (triggered_boundary_conditions or [])],
+            "still_open": [_summarize_boundary_condition(c) for c in (still_open_boundary_conditions or [])],
+        },
     }
     return (
         "Aktueller Portfolio-Zustand, Marktdaten und Risikolimiten (JSON):\n\n"
@@ -209,4 +249,16 @@ def _summarize_reflection_for_prompt(latest_reflection) -> dict | None:
         "theses_falsified_or_overdue": data.get("theses_falsified_or_overdue", []),
         "pattern_matching_concerns": data.get("pattern_matching_concerns"),
         "portfolio_stance_assessment": data.get("portfolio_stance_assessment"),
+    }
+
+
+def _summarize_boundary_condition(condition) -> dict:
+    """`condition` ist ein boundary_conditions.BoundaryConditionCheck -
+    reicht nur die fuer die Tagesentscheidung relevanten Felder durch (nicht
+    die interne DB-`id`/`position_id`)."""
+    return {
+        "symbol": condition.symbol,
+        "description": condition.description,
+        "check_type": condition.check_type,
+        "threshold_price": condition.threshold_price,
     }

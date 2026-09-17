@@ -28,6 +28,37 @@ class OrderSide(str, Enum):
     COVER = "cover"    # short reduzieren/schliessen
 
 
+class BoundaryConditionCheckType(str, Enum):
+    """Kap. 7: nur PRICE_ABOVE/PRICE_BELOW sind mechanisch prüfbar (siehe
+    boundary_conditions.py) - QUALITATIVE (z.B. Makro-/Earnings-Ereignisse)
+    wird nicht automatisch geprüft, sondern nur dokumentiert/weitergeführt."""
+    PRICE_ABOVE = "price_above"
+    PRICE_BELOW = "price_below"
+    QUALITATIVE = "qualitative"
+
+
+class BoundaryCondition(BaseModel):
+    """Eine von Claude genannte Randbedingung (Kap. 7), deren Eintreten die
+    These hinter einer Position bestätigen oder entkräften würde. Optional/
+    best-effort - keine Order wird abgelehnt, nur weil sie fehlt (siehe
+    ProposedOrder, kein Pflichtfeld). Bezieht sich immer auf den Kurs des
+    Order-Symbols selbst, nicht auf einen externen Proxy-Titel."""
+    description: str
+    check_type: BoundaryConditionCheckType = BoundaryConditionCheckType.QUALITATIVE
+    threshold_price: Optional[float] = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_threshold(self) -> "BoundaryCondition":
+        if (
+            self.check_type in (BoundaryConditionCheckType.PRICE_ABOVE, BoundaryConditionCheckType.PRICE_BELOW)
+            and self.threshold_price is None
+        ):
+            raise ValueError(
+                f"Randbedingung mit check_type='{self.check_type.value}' benötigt 'threshold_price'."
+            )
+        return self
+
+
 class ProposedOrder(BaseModel):
     symbol: str
     instrument_type: InstrumentType
@@ -38,6 +69,7 @@ class ProposedOrder(BaseModel):
     limit_price: Optional[float] = Field(default=None, gt=0)
     underlying_symbol: Optional[str] = None
     stop_loss_price: Optional[float] = Field(default=None, gt=0)
+    boundary_conditions: list[BoundaryCondition] = Field(default_factory=list)
     rationale: str
 
     @model_validator(mode="after")

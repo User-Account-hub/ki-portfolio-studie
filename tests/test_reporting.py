@@ -7,6 +7,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from src.boundary_conditions import BoundaryConditionCheck
 from src.data_quality import DataQualityReport
 from src.deep_reflection_schema import DeepReflectionOutput
 from src.metrics import MetricsResult
@@ -30,11 +31,12 @@ def make_metrics() -> MetricsResult:
     )
 
 
-def _generate(deep_reflection) -> str:
+def _generate(deep_reflection, triggered_boundary_conditions=None, still_open_boundary_conditions=None) -> str:
     portfolio_row = {"name": "test", "currency": "USD", "benchmark_symbol": "SPY"}
     with tempfile.TemporaryDirectory() as tmp_dir:
         report_path = generate_report(
-            portfolio_row, [], [], [], "", make_metrics(), EMPTY_DQ_REPORT, deep_reflection, tmp_dir
+            portfolio_row, [], [], [], "", make_metrics(), EMPTY_DQ_REPORT, deep_reflection,
+            triggered_boundary_conditions or [], still_open_boundary_conditions or [], tmp_dir,
         )
         return Path(report_path).read_text(encoding="utf-8")
 
@@ -57,3 +59,40 @@ def test_report_includes_reflection_section_when_present():
     assert "NVDA-These bestätigt" in content
     assert "CCJ-These überfällig" in content
     assert "Alles im Rahmen der Methodik." in content
+
+
+# --- Randbedingungen (Kap. 7) -----------------------------------------------
+
+
+def test_report_shows_no_open_boundary_conditions_when_empty():
+    content = _generate(deep_reflection=None)
+    assert "## Randbedingungen (Kap. 7)" in content
+    assert "_Keine offenen Randbedingungen._" in content
+
+
+def test_report_shows_triggered_and_still_open_boundary_conditions():
+    triggered = [
+        BoundaryConditionCheck(
+            id=1, position_id=10, symbol="NVDA", description="Fällt unter $150",
+            check_type="price_below", threshold_price=150.0,
+        )
+    ]
+    still_open = [
+        BoundaryConditionCheck(
+            id=2, position_id=11, symbol="CCJ", description="Q3-Earnings enttäuschen",
+            check_type="qualitative", threshold_price=None,
+        ),
+        BoundaryConditionCheck(
+            id=3, position_id=12, symbol="AMD", description="Steigt über $250",
+            check_type="price_above", threshold_price=250.0,
+        ),
+    ]
+    content = _generate(
+        deep_reflection=None, triggered_boundary_conditions=triggered, still_open_boundary_conditions=still_open
+    )
+    assert "**Ausgelöst in diesem Lauf:**" in content
+    assert "NVDA" in content and "Fällt unter $150" in content
+    assert "**Weiterhin offen:**" in content
+    assert "nicht automatisch prüfbar" in content
+    assert "Schwelle 250.00" in content
+    assert "_Keine offenen Randbedingungen._" not in content

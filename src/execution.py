@@ -150,6 +150,21 @@ def _apply_fill_to_db(
             fill_price=fill.filled_price,
             stop_loss_price=order.stop_loss_price,
         )
+        # Kap. 7: von Claude genannte Randbedingungen fuer diese These
+        # speichern (optional/best-effort - order.boundary_conditions ist
+        # meist leer, kein Fehler). decision_id bleibt bewusst None (die
+        # Decision existiert an dieser Stelle im Ablauf noch nicht, siehe
+        # execute_proposed_orders) - position_id reicht fuer die Zuordnung.
+        for bc in order.boundary_conditions:
+            db.insert_boundary_condition(
+                conn,
+                portfolio_id=portfolio_id,
+                position_id=position_id,
+                symbol=order.symbol,
+                description=bc.description,
+                check_type=bc.check_type.value,
+                threshold_price=bc.threshold_price,
+            )
     else:
         row = conn.execute(
             "SELECT id FROM positions WHERE portfolio_id = ? AND symbol = ? AND side = ? AND status = 'open'",

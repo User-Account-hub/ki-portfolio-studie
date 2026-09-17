@@ -96,7 +96,29 @@ CREATE TABLE IF NOT EXISTS nav_history (
     nav             REAL NOT NULL
 );
 
+-- Randbedingungs-Tracking (Thesis Kap. 7, 2026-09-17): jede von Claude bei
+-- einer Kauf-/Short-Empfehlung genannte Randbedingung (siehe
+-- order_schema.BoundaryCondition) wird hier gespeichert und bei jedem Lauf
+-- gegen die aktuellen Kurse geprueft, solange die zugehoerige Position
+-- offen ist (siehe boundary_conditions.py). Rein dokumentarisch - ein
+-- Trigger loest KEINE automatische Order aus.
+CREATE TABLE IF NOT EXISTS boundary_conditions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    portfolio_id        INTEGER NOT NULL REFERENCES portfolios(id),
+    position_id         INTEGER NOT NULL REFERENCES positions(id),
+    decision_id         INTEGER REFERENCES decisions(id),
+    symbol              TEXT NOT NULL,
+    description         TEXT NOT NULL,
+    check_type          TEXT NOT NULL CHECK (check_type IN ('price_above', 'price_below', 'qualitative')),
+    threshold_price     REAL,          -- Pflicht bei price_above/price_below, NULL bei qualitativ
+    status              TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'triggered', 'closed_with_position')),
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    triggered_at        TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_positions_portfolio_status ON positions(portfolio_id, status);
 CREATE INDEX IF NOT EXISTS idx_trades_portfolio_symbol_date ON trades(portfolio_id, symbol, executed_at);
 CREATE INDEX IF NOT EXISTS idx_decisions_portfolio_date ON decisions(portfolio_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_nav_history_portfolio_recorded ON nav_history(portfolio_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_boundary_conditions_portfolio_status ON boundary_conditions(portfolio_id, status);
+CREATE INDEX IF NOT EXISTS idx_boundary_conditions_position ON boundary_conditions(position_id);

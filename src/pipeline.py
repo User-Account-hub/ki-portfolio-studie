@@ -25,7 +25,18 @@ import sys
 
 import pandas as pd
 
-from src import broker_alpaca, data_fetch, data_quality, db, deep_reflection_prompt, deep_reflection_schema, execution, metrics, reporting
+from src import (
+    boundary_conditions,
+    broker_alpaca,
+    data_fetch,
+    data_quality,
+    db,
+    deep_reflection_prompt,
+    deep_reflection_schema,
+    execution,
+    metrics,
+    reporting,
+)
 from src.claude_client import get_trading_decision
 from src.config import AppConfig, RiskConfig, Watchlist
 from src.order_schema import STRUCTURED_INSTRUMENT_TYPES, OrderParsingError, parse_orders_from_json
@@ -73,6 +84,37 @@ def _run_data_quality_checks(
         log.exception("Kurshistorien-Abruf (Datenqualität) fehlgeschlagen - wird übersprungen.")
 
     return data_quality.build_report(yfinance_prices, alpaca_prices, price_histories)
+
+
+def _check_boundary_conditions(
+    conn,
+    portfolio_id: int,
+    current_prices: dict[str, float],
+) -> tuple[list[boundary_conditions.BoundaryConditionCheck], list[boundary_conditions.BoundaryConditionCheck]]:
+    """Kap. 7: mechanische Prüfung aller offenen Randbedingungen gegen die
+    bereits geladenen `current_prices` - rein dokumentarisch, siehe
+    src/boundary_conditions.py für die Prüflogik. Kein Abbruch bei einem
+    Fehler dieses Checks selbst (analog zu _run_data_quality_checks)."""
+    try:
+        open_rows = db.get_open_boundary_conditions(conn, portfolio_id)
+        checks = [
+            boundary_conditions.BoundaryConditionCheck(
+                id=r["id"],
+                position_id=r["position_id"],
+                symbol=r["symbol"],
+                description=r["description"],
+                check_type=r["check_type"],
+                threshold_price=r["threshold_price"],
+            )
+            for r in open_rows
+        ]
+        triggered, still_open = boundary_conditions.evaluate_boundary_conditions(checks, current_prices)
+        if triggered:
+            db.mark_boundary_conditions_triggered(conn, [c.id for c in triggered])
+        return triggered, still_open
+    except Exception:
+        log.exception("Randbedingungs-Prüfung (Kap. 7) fehlgeschlagen - wird übersprungen.")
+        return [], []
 
 
 def _nav_value_at_or_before(dates: list[pd.Timestamp], values: list[float], target: pd.Timestamp) -> float | None:
@@ -194,6 +236,7 @@ def run() -> None:
     with db.get_connection(app_config.db_path) as conn:
         db.ensure_nav_history_table(conn)  # idempotente Migration, siehe db.py-Docstring
         db.ensure_trade_transaction_cost_column(conn)  # idempotente Migration, siehe db.py-Docstring
+        db.ensure_boundary_conditions_table(conn)  # idempotente Migration, siehe db.py-Docstring
         portfolio_row = db.get_portfolio(conn, app_config.portfolio_name)
         open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
 
@@ -216,6 +259,13 @@ def run() -> None:
         )
         for line in dq_report.log_lines():
             log.warning("Datenqualität: %s", line)
+
+        log.info("Prüfe Randbedingungen (Kap. 7) offener Positionen...")
+        triggered_boundary_conditions, still_open_boundary_conditions = _check_boundary_conditions(
+            conn, portfolio_row["id"], current_prices
+        )
+        for c in triggered_boundary_conditions:
+            log.warning("Randbedingung ausgelöst für %s: %s", c.symbol, c.description)
 
         start_of_run_nav = compute_nav(
             portfolio_row["cash_balance"],
@@ -272,6 +322,8 @@ def run() -> None:
             prompt = build_user_prompt(
                 portfolio_row, open_position_rows, watchlist, snapshots, risk_config,
                 latest_reflection=latest_reflection,
+                triggered_boundary_conditions=triggered_boundary_conditions,
+                still_open_boundary_conditions=still_open_boundary_conditions,
             )
 
             log.info("Rufe Claude (%s) für Handelsentscheidung auf...", app_config.claude_model)
@@ -344,6 +396,8 @@ def run() -> None:
             metrics_result,
             dq_report,
             deep_reflection_result,
+            triggered_boundary_conditions,
+            still_open_boundary_conditions,
             app_config.reports_dir,
         )
         log.info("Report geschrieben: %s", report_path)

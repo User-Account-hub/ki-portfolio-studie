@@ -57,6 +57,32 @@ def ensure_trade_transaction_cost_column(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def ensure_boundary_conditions_table(conn: sqlite3.Connection) -> None:
+    """Forward-compatible migration (2026-09-17, Randbedingungs-Tracking
+    Kap. 7) für ein db/portfolio.db, das vor der `boundary_conditions`-
+    Tabelle erstellt wurde - analog zu ensure_nav_history_table oben."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS boundary_conditions (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            portfolio_id        INTEGER NOT NULL REFERENCES portfolios(id),
+            position_id         INTEGER NOT NULL REFERENCES positions(id),
+            decision_id         INTEGER REFERENCES decisions(id),
+            symbol              TEXT NOT NULL,
+            description         TEXT NOT NULL,
+            check_type          TEXT NOT NULL CHECK (check_type IN ('price_above', 'price_below', 'qualitative')),
+            threshold_price     REAL,
+            status              TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'triggered', 'closed_with_position')),
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            triggered_at        TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_boundary_conditions_portfolio_status ON boundary_conditions(portfolio_id, status);
+        CREATE INDEX IF NOT EXISTS idx_boundary_conditions_position ON boundary_conditions(position_id);
+        """
+    )
+    conn.commit()
+
+
 def record_nav(conn: sqlite3.Connection, portfolio_id: int, nav: float) -> int:
     """Records one NAV data point (typically the NAV at pipeline run start)."""
     cur = conn.execute(
@@ -242,6 +268,11 @@ def reduce_or_close_position(
             """,
             (closure_reason, closure_notes, realized_pnl_delta, position_id),
         )
+        # Kap. 7: eine geschlossene Position hat keine offene These mehr zu
+        # schuetzen/beobachten - unabhaengig vom Schliessungsgrund werden
+        # ihre noch offenen Randbedingungen als erledigt markiert, statt als
+        # Karteileichen liegenzubleiben (siehe boundary_conditions.py).
+        close_boundary_conditions_for_position(conn, position_id)
     else:
         conn.execute(
             """
@@ -374,3 +405,57 @@ def get_latest_reflection(conn: sqlite3.Connection, portfolio_id: int) -> Option
         """,
         (portfolio_id,),
     ).fetchone()
+
+
+# --- Randbedingungs-Tracking (Kap. 7, 2026-09-17) -------------------------------
+
+
+def insert_boundary_condition(
+    conn: sqlite3.Connection,
+    portfolio_id: int,
+    position_id: int,
+    symbol: str,
+    description: str,
+    check_type: str,
+    threshold_price: Optional[float],
+    decision_id: Optional[int] = None,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO boundary_conditions
+            (portfolio_id, position_id, decision_id, symbol, description, check_type, threshold_price)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (portfolio_id, position_id, decision_id, symbol, description, check_type, threshold_price),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_open_boundary_conditions(conn: sqlite3.Connection, portfolio_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM boundary_conditions WHERE portfolio_id = ? AND status = 'open'",
+        (portfolio_id,),
+    ).fetchall()
+
+
+def mark_boundary_conditions_triggered(conn: sqlite3.Connection, ids: list[int]) -> None:
+    if not ids:
+        return
+    conn.executemany(
+        "UPDATE boundary_conditions SET status = 'triggered', triggered_at = datetime('now') WHERE id = ?",
+        [(i,) for i in ids],
+    )
+    conn.commit()
+
+
+def close_boundary_conditions_for_position(conn: sqlite3.Connection, position_id: int) -> None:
+    """Markiert alle noch offenen Randbedingungen einer Position als
+    'closed_with_position' - aufgerufen aus reduce_or_close_position bei
+    vollstaendigem Schluss, unabhaengig vom Schliessungsgrund. Eigenstaendig
+    commit-faehig fuer direkte Aufrufe/Tests."""
+    conn.execute(
+        "UPDATE boundary_conditions SET status = 'closed_with_position' WHERE position_id = ? AND status = 'open'",
+        (position_id,),
+    )
+    conn.commit()
