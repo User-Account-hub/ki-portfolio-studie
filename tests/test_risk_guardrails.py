@@ -40,6 +40,7 @@ def make_config(**overrides) -> RiskConfig:
         max_top3_concentration_pct_of_nav=0.35,
         min_cash_pct_of_nav=0.05,
         circuit_breaker_drawdown_pct=-0.25,
+        transaction_cost_pct_of_notional=0.001,
     )
     defaults.update(overrides)
     return RiskConfig(**defaults)

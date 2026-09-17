@@ -42,6 +42,21 @@ def ensure_nav_history_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def ensure_trade_transaction_cost_column(conn: sqlite3.Connection) -> None:
+    """Forward-compatible migration (2026-09-17, feste Kosten-Annahme pro
+    Trade) für ein db/portfolio.db, das vor der `transaction_cost`-Spalte
+    erstellt wurde - analog zu ensure_nav_history_table oben, nur für eine
+    Spalte statt eine Tabelle. SQLite kennt kein `ADD COLUMN IF NOT EXISTS`,
+    daher der PRAGMA table_info-Check: ein wiederholter Aufruf bei jedem
+    Pipeline-Lauf darf nicht mit "duplicate column name" abstürzen. DEFAULT 0
+    gilt für bereits vorhandene Zeilen - historische Trades vor dieser
+    Änderung rückwirkend Kosten zu unterstellen wäre falsch."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(trades)")}
+    if "transaction_cost" not in columns:
+        conn.execute("ALTER TABLE trades ADD COLUMN transaction_cost REAL NOT NULL DEFAULT 0")
+        conn.commit()
+
+
 def record_nav(conn: sqlite3.Connection, portfolio_id: int, nav: float) -> int:
     """Records one NAV data point (typically the NAV at pipeline run start)."""
     cur = conn.execute(
@@ -254,13 +269,15 @@ def insert_trade(
     source: str,
     status: str,
     rejection_reason: Optional[str] = None,
+    transaction_cost: float = 0.0,
 ) -> int:
     cur = conn.execute(
         """
         INSERT INTO trades
             (portfolio_id, position_id, decision_id, symbol, instrument_type, side,
-             quantity, price, notional, order_type, broker_order_id, source, status, rejection_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             quantity, price, notional, transaction_cost, order_type, broker_order_id,
+             source, status, rejection_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             portfolio_id,
@@ -272,6 +289,7 @@ def insert_trade(
             quantity,
             price,
             quantity * price,
+            transaction_cost,
             order_type,
             broker_order_id,
             source,

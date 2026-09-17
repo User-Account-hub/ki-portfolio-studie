@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.metrics import PHASE2_PERIODS_PER_YEAR, NavHistory, compute_metrics
+from src.metrics import PHASE2_PERIODS_PER_YEAR, NavHistory, _replay_ledger, compute_metrics
 
 
 def make_nav_history(
@@ -245,6 +245,36 @@ def test_compute_metrics_baseline_total_return_uses_initial_nav_not_first_checkp
     assert result.baseline_total_return_pct == pytest.approx(expected_baseline_return)
     assert result.baseline_total_return_pct != pytest.approx(wrong_baseline_return)
     assert result.baseline_alpha_pct == pytest.approx(result.total_return_pct - expected_baseline_return)
+
+
+def test_replay_ledger_deducts_transaction_cost_from_cash():
+    """2026-09-17: die feste Spread/Slippage-Pauschale muss beim Replay
+    mitgezogen werden, sonst driftet die rekonstruierte NAV-Historie von der
+    tatsaechlichen (live gefuehrten) cash_balance weg - siehe execution.py."""
+    trades = [
+        {
+            "executed_at": "2026-01-05 10:00:00", "side": "buy", "quantity": 10.0,
+            "price": 100.0, "symbol": "AAPL", "instrument_type": "equity",
+            "transaction_cost": 1.0,
+        },
+    ]
+    snapshots = _replay_ledger(trades, initial_cash=100_000.0)
+    # 100_000 - (10*100) - 1.0 Kosten = 98_999.0
+    assert snapshots[-1]["cash"] == pytest.approx(98_999.0)
+
+
+def test_replay_ledger_defaults_transaction_cost_to_zero_when_column_missing():
+    """Rueckwirkende Kompatibilitaet: Trades ohne transaction_cost-Schluessel
+    (z.B. ein Fake-Row-Objekt ohne diese Spalte) duerfen den Replay nicht
+    crashen und keine Kosten erfinden."""
+    trades = [
+        {
+            "executed_at": "2026-01-05 10:00:00", "side": "buy", "quantity": 10.0,
+            "price": 100.0, "symbol": "AAPL", "instrument_type": "equity",
+        },
+    ]
+    snapshots = _replay_ledger(trades, initial_cash=100_000.0)
+    assert snapshots[-1]["cash"] == pytest.approx(99_000.0)
 
 
 def test_compute_metrics_falls_back_to_phase1_annualization_before_regime_change():

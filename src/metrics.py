@@ -116,7 +116,14 @@ def _replay_ledger(trades: list[sqlite3.Row], initial_cash: float) -> list[dict]
 
     for t in trades:
         side, qty, price, symbol = t["side"], t["quantity"], t["price"], t["symbol"]
-        cash += CASH_SIGN[side] * qty * price
+        # 2026-09-17: die feste Spread/Slippage-Pauschale (execution.py,
+        # risk_config.yaml) wird beim echten Fill vom cash_balance abgezogen -
+        # muss hier mitreplayed werden, sonst driftet diese rekonstruierte
+        # Zeitreihe von der tatsaechlichen (live gefuehrten) cash_balance weg.
+        # `"transaction_cost" in t.keys()`-Fallback deckt Trades von vor
+        # dieser Spalte ab (DEFAULT 0 in der DB, aber defensiv auch hier).
+        transaction_cost = t["transaction_cost"] if "transaction_cost" in t.keys() else 0.0
+        cash += CASH_SIGN[side] * qty * price - transaction_cost
 
         if side in OPEN_SIDES:
             key = (symbol, OPEN_SIDES[side])

@@ -155,3 +155,71 @@ def test_record_nav_appends_without_overwriting():
         "SELECT nav FROM nav_history WHERE portfolio_id = ? ORDER BY id", (portfolio_id,)
     ).fetchall()
     assert [r["nav"] for r in rows] == [100_000.0, 105_000.0]
+
+
+# --- ensure_trade_transaction_cost_column (Migration, 2026-09-17) --------------
+
+
+def test_ensure_trade_transaction_cost_column_is_idempotent():
+    """schema.sql legt die Spalte schon an; ein erneuter Aufruf (Migration
+    fuer eine bereits deployte DB) darf nicht mit "duplicate column" abstuerzen."""
+    conn = make_conn()
+    db.ensure_trade_transaction_cost_column(conn)
+    db.ensure_trade_transaction_cost_column(conn)
+
+    portfolio_id = make_portfolio(conn)
+    trade_id = db.insert_trade(
+        conn, portfolio_id=portfolio_id, position_id=None, decision_id=None,
+        symbol="AAPL", instrument_type="equity", side="buy", quantity=1, price=100.0,
+        order_type="market", broker_order_id=None, source="alpaca", status="filled",
+    )
+    row = conn.execute("SELECT transaction_cost FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    assert row["transaction_cost"] == 0.0  # Default, wenn nicht explizit uebergeben
+
+
+def test_ensure_trade_transaction_cost_column_on_db_without_it():
+    """Simuliert eine bereits deployte DB ohne die transaction_cost-Spalte
+    (aeltere schema.sql-Version): Spalte fehlt zunaechst, muss aber sauber
+    nachgezogen werden, ohne bestehende Trades anzutasten."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    old_schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    # Entfernt jede Zeile, die "transaction_cost" erwaehnt (Spaltendefinition
+    # UND ihre Kommentarzeilen) - robuster als ein exaktes Text-Match gegen
+    # den aktuellen Kommentarwortlaut.
+    without_cost_column = "\n".join(
+        line for line in old_schema.splitlines() if "transaction_cost" not in line
+    )
+    assert "transaction_cost" not in without_cost_column  # Sanity: Filterung hat gegriffen
+    conn.executescript(without_cost_column)
+
+    portfolio_id = make_portfolio(conn)
+
+    db.ensure_trade_transaction_cost_column(conn)  # Migration
+
+    # Spalte jetzt nutzbar, mit Default 0 fuer neue Inserts ohne expliziten Wert:
+    trade_id = db.insert_trade(
+        conn, portfolio_id=portfolio_id, position_id=None, decision_id=None,
+        symbol="MSFT", instrument_type="equity", side="buy", quantity=1, price=200.0,
+        order_type="market", broker_order_id=None, source="alpaca", status="filled",
+    )
+    row = conn.execute("SELECT transaction_cost FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    assert row["transaction_cost"] == 0.0
+
+
+# --- insert_trade records transaction_cost -------------------------------------
+
+
+def test_insert_trade_records_explicit_transaction_cost():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    trade_id = db.insert_trade(
+        conn, portfolio_id=portfolio_id, position_id=None, decision_id=None,
+        symbol="AAPL", instrument_type="equity", side="buy", quantity=10, price=150.0,
+        order_type="market", broker_order_id=None, source="alpaca", status="filled",
+        transaction_cost=1.5,
+    )
+    row = conn.execute("SELECT transaction_cost, notional FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    assert row["transaction_cost"] == 1.5
+    assert row["notional"] == 1500.0  # unveraendert - Kosten fliessen NICHT ins notional ein

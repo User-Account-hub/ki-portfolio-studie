@@ -80,3 +80,10 @@ min_cash_pct_of_nav: 0.05
 # keine neuen/aufstockenden Hebelpositionen (strukturierte Produkte) mehr
 # eröffnet werden dürfen. Negativer Wert, analog zu daily_loss_stop_pct.
 circuit_breaker_drawdown_pct: -0.25
+
+# Feste Kosten-Annahme pro Trade (Spread/Slippage-Pauschale, 2026-09-17):
+# wird bei JEDER Order-Ausführung tatsächlich vom Cash abgezogen (siehe
+# execution.py), nicht nur als Limitation im README erwähnt. Gilt für beide
+# Richtungen (Kauf/Short UND Verkauf/Cover) - ein Spread kostet unabhängig
+# von der Handelsrichtung. 0.001 = 0.1% des Notional-Betrags je Trade.
+transaction_cost_pct_of_notional: 0.001

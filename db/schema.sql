@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS trades (
     quantity            REAL NOT NULL CHECK (quantity > 0),
     price               REAL NOT NULL,
     notional            REAL NOT NULL,
+    -- Feste Spread/Slippage-Pauschale (transaction_cost_pct_of_notional in
+    -- risk_config.yaml), tatsaechlich vom cash_balance abgezogen (siehe
+    -- execution.py) - NICHT nur als Limitation dokumentiert. DEFAULT 0
+    -- haelt Trades von vor dieser Aenderung unveraendert (keine rueckwirkend
+    -- erfundenen Kosten).
+    transaction_cost    REAL NOT NULL DEFAULT 0,
     order_type          TEXT NOT NULL DEFAULT 'market',
     broker_order_id     TEXT,          -- Alpaca Order-ID, NULL bei simulierten Trades
     source              TEXT NOT NULL CHECK (source IN ('alpaca', 'manual_simulation')),

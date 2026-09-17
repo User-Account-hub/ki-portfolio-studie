@@ -28,6 +28,10 @@ class RiskConfig:
     max_top3_concentration_pct_of_nav: float
     min_cash_pct_of_nav: float
     circuit_breaker_drawdown_pct: float
+    # Feste Kosten-Annahme pro Trade (Spread/Slippage-Pauschale, 2026-09-17) -
+    # Anteil des Notional-Betrags, der bei jeder Order-Ausführung tatsächlich
+    # vom Cash abgezogen wird (siehe execution.py). Gilt für beide Richtungen.
+    transaction_cost_pct_of_notional: float
 
     @classmethod
     def from_yaml(cls, path: str) -> "RiskConfig":

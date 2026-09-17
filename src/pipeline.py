@@ -92,6 +92,7 @@ def run() -> None:
 
     with db.get_connection(app_config.db_path) as conn:
         db.ensure_nav_history_table(conn)  # idempotente Migration, siehe db.py-Docstring
+        db.ensure_trade_transaction_cost_column(conn)  # idempotente Migration, siehe db.py-Docstring
         portfolio_row = db.get_portfolio(conn, app_config.portfolio_name)
         open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
 

@@ -8,6 +8,14 @@ Cash-flow convention (documented once here, applied consistently):
 This matches real cash economics and keeps NAV (see risk_guardrails.compute_nav)
 unchanged at the instant a trade is opened - only price movement thereafter
 produces P&L.
+
+Transaction cost (2026-09-17, risk_config.yaml's transaction_cost_pct_of_notional):
+a fixed spread/slippage allowance, `notional * transaction_cost_pct_of_notional`,
+is additionally deducted from cash on EVERY fill regardless of direction (buy,
+sell, short, and cover all erode cash a little via this cost) - see
+_apply_fill_to_db/execute_forced_stop_loss_actions. Stored per-trade on
+trades.transaction_cost so metrics.py's ledger replay stays consistent with the
+live cash_balance instead of silently drifting from it.
 """
 from __future__ import annotations
 
@@ -121,10 +129,14 @@ def _apply_fill_to_db(
     order_side: OrderSide,
     fill: broker_alpaca.FillResult,
     source: str,
+    transaction_cost_pct: float,
 ) -> int:
     position_side = POSITION_SIDE[order_side]
     quantity = fill.filled_qty
     notional = quantity * fill.filled_price
+    # Feste Spread/Slippage-Pauschale (2026-09-17, risk_config.yaml) - trifft
+    # das Cash unabhaengig von der Handelsrichtung, siehe Modul-Docstring.
+    transaction_cost = notional * transaction_cost_pct
 
     if order_side in INCREASES_POSITION:
         position_id = db.upsert_open_position(
@@ -150,7 +162,7 @@ def _apply_fill_to_db(
             conn, position_id, delta_quantity=quantity, fill_price=fill.filled_price, closure_reason="claude_decision"
         )
 
-    db.update_cash_balance(conn, portfolio_id, CASH_DIRECTION[order_side] * notional)
+    db.update_cash_balance(conn, portfolio_id, CASH_DIRECTION[order_side] * notional - transaction_cost)
 
     return db.insert_trade(
         conn,
@@ -166,6 +178,7 @@ def _apply_fill_to_db(
         broker_order_id=fill.broker_order_id or None,
         source=source,
         status=fill.status,
+        transaction_cost=transaction_cost,
     )
 
 
@@ -174,6 +187,7 @@ def execute_forced_stop_loss_actions(
     portfolio_row: sqlite3.Row,
     forced_actions: list[ForcedStopLossAction],
     broker_client,
+    transaction_cost_pct: float,
 ) -> list[int]:
     """Executes mandatory short-covers regardless of the daily-loss-stop gate.
 
@@ -243,7 +257,15 @@ def execute_forced_stop_loss_actions(
                 closure_reason="short_stop_loss_forced",
                 closure_notes=action.documentation,
             )
-            db.update_cash_balance(conn, portfolio_row["id"], CASH_DIRECTION[OrderSide.COVER] * fill.filled_qty * fill.filled_price)
+            # Feste Spread/Slippage-Pauschale gilt auch fuer Pflicht-Stop-Loss-
+            # Covers - der Markt macht dabei keinen Unterschied zu freiwilligen Trades.
+            forced_notional = fill.filled_qty * fill.filled_price
+            forced_transaction_cost = forced_notional * transaction_cost_pct
+            db.update_cash_balance(
+                conn,
+                portfolio_row["id"],
+                CASH_DIRECTION[OrderSide.COVER] * forced_notional - forced_transaction_cost,
+            )
             trade_id = db.insert_trade(
                 conn,
                 portfolio_id=portfolio_row["id"],
@@ -258,6 +280,7 @@ def execute_forced_stop_loss_actions(
                 broker_order_id=fill.broker_order_id or None,
                 source=source,
                 status=fill.status,
+                transaction_cost=forced_transaction_cost,
             )
             trade_ids.append(trade_id)
     return trade_ids
@@ -345,7 +368,10 @@ def execute_proposed_orders(
         trades_today[order.symbol] = trades_today.get(order.symbol, 0) + 1
 
         # Trade + Positions-Update erfolgt sofort, Decision-Datensatz gebündelt danach.
-        results[-1].trade_id = _apply_fill_to_db(conn, portfolio_row["id"], None, order, order_side, fill, source)
+        results[-1].trade_id = _apply_fill_to_db(
+            conn, portfolio_row["id"], None, order, order_side, fill, source,
+            transaction_cost_pct=risk_config.transaction_cost_pct_of_notional,
+        )
 
     decision_id = db.insert_decision(
         conn,
@@ -381,5 +407,7 @@ def run_short_stop_loss_sweep(
     positions = db.open_positions_as_risk_objects(open_position_rows)
     forced = evaluate_short_positions_for_stop_loss(positions, current_prices, risk_config.short_stop_loss_pct)
     if forced:
-        execute_forced_stop_loss_actions(conn, portfolio_row, forced, broker_client)
+        execute_forced_stop_loss_actions(
+            conn, portfolio_row, forced, broker_client, risk_config.transaction_cost_pct_of_notional
+        )
     return forced
