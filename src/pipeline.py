@@ -222,7 +222,9 @@ def run() -> None:
             portfolio_row["benchmark_symbol"],
             momentum_universe_symbols=momentum_universe_symbols,
         )
-        metrics_result = metrics.compute_metrics(nav_history)
+        metrics_result = metrics.compute_metrics(
+            nav_history, risk_free_rate_annual=app_config.risk_free_rate_annual
+        )
 
         report_path = reporting.generate_report(
             portfolio_row,

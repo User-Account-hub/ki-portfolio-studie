@@ -60,6 +60,19 @@ CLOSE_SIDES = {"sell": "long", "cover": "short"}
 PHASE2_START = pd.Timestamp("2026-09-10")
 PHASE2_PERIODS_PER_YEAR = 252.0
 
+# 2026-09-17: realistische Risk-free-Rate-Annahme fuer die Sharpe-Ratio
+# (vorher fix 0.0 - unterstellte damit, dass "risikofrei" 0% Rendite
+# abwirft, was den Sharpe systematisch nach oben verzerrt hatte). Anker: US
+# 3-Monats-T-Bill, ~3.94-4.06% je nach Quelle am 2026-09-15/16 (13-Wochen-
+# T-Bill-Rendite bzw. Sekundaermarktrendite), auf 4.0% gerundet. Punkt-
+# schaetzung, kein Live-Feed - sollte periodisch von Hand aktualisiert
+# werden, da sich der Zins ueber die Studienlaufzeit bewegt. Der praktikable
+# Weg dafuer ist AppConfig.risk_free_rate_annual (Env-Var
+# RISK_FREE_RATE_ANNUAL, siehe config.py/README) - die Pipeline uebergibt
+# diesen Wert explizit an compute_metrics; die Konstante hier ist nur der
+# Fallback fuer direkte/Test-Aufrufe ohne expliziten Wert.
+DEFAULT_RISK_FREE_RATE_ANNUAL = 0.04
+
 
 @dataclass(frozen=True)
 class NavHistory:
@@ -315,7 +328,7 @@ def reconstruct_nav_history(
 
 def compute_metrics(
     nav_history: NavHistory,
-    risk_free_rate_annual: float = 0.0,
+    risk_free_rate_annual: float = DEFAULT_RISK_FREE_RATE_ANNUAL,
     phase2_start: pd.Timestamp = PHASE2_START,
 ) -> MetricsResult:
     nav = pd.Series(nav_history.nav, index=nav_history.dates)

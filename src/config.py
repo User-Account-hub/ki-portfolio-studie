@@ -86,6 +86,13 @@ class AppConfig:
     watchlist_path: str
     risk_config_path: str
     reports_dir: str
+    # Risk-free-Rate fuer die Sharpe-Ratio (src/metrics.py compute_metrics),
+    # 2026-09-17: Anker US-3-Monats-T-Bill (~4.0%, siehe DEFAULT_
+    # RISK_FREE_RATE_ANNUAL in metrics.py fuer die Quellenangabe). Bewusst
+    # ein Env-Var statt einer Konstante in metrics.py, damit der Zins ohne
+    # Code-Aenderung aktuell gehalten werden kann (z.B. via GitHub-Actions-
+    # Repo-Variable, siehe weekly_pipeline.yml).
+    risk_free_rate_annual: float
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -103,6 +110,7 @@ class AppConfig:
             watchlist_path=os.getenv("WATCHLIST_PATH", "./config/watchlist.yaml"),
             risk_config_path=os.getenv("RISK_CONFIG_PATH", "./config/risk_config.yaml"),
             reports_dir=os.getenv("REPORTS_DIR", "./reports"),
+            risk_free_rate_annual=float(os.getenv("RISK_FREE_RATE_ANNUAL", "0.04")),
         )
 
 

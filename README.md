@@ -216,7 +216,9 @@ die Defaults aus dem Workflow):
 
 `CLAUDE_MODEL`, `ALPACA_BASE_URL`, `DB_PATH`, `PORTFOLIO_NAME`,
 `INITIAL_CASH_BALANCE`, `PORTFOLIO_CURRENCY`, `BENCHMARK_SYMBOL`,
-`WATCHLIST_PATH`, `RISK_CONFIG_PATH`, `REPORTS_DIR`.
+`WATCHLIST_PATH`, `RISK_CONFIG_PATH`, `REPORTS_DIR`, `RISK_FREE_RATE_ANNUAL`
+(Sharpe-Ratio-Annahme, Anker US-3-Monats-T-Bill - siehe src/metrics.py,
+periodisch von Hand aktualisieren).
 
 Die SQLite-Datei (`db/*.db`) und die generierten Reports werden vom
 Workflow nach jedem Lauf zurück ins Repository committet, damit der

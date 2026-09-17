@@ -27,7 +27,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.metrics import PHASE2_PERIODS_PER_YEAR, NavHistory, _replay_ledger, compute_metrics
+from src.metrics import (
+    DEFAULT_RISK_FREE_RATE_ANNUAL,
+    PHASE2_PERIODS_PER_YEAR,
+    NavHistory,
+    _replay_ledger,
+    compute_metrics,
+)
 
 
 def make_nav_history(
@@ -115,7 +121,11 @@ def test_compute_metrics_uses_phase2_annualization_once_enough_daily_returns_exi
     nav_values = [100_000, 100_800, 101_500, 101_200, 101_900, 101_600]
     nav_history = make_nav_history(nav_values, periods_per_year=104, dates=dates)
 
-    result = compute_metrics(nav_history, phase2_start=phase2_start)
+    # risk_free_rate_annual=0.0 explizit: dieser Test prueft die Annualisierung/
+    # Phasenlogik, nicht die Risk-free-Rate-Annahme (siehe test_compute_metrics_
+    # default_risk_free_rate_annual_matches_documented_constant dafuer) - soll
+    # sich nicht aendern, wenn DEFAULT_RISK_FREE_RATE_ANNUAL angepasst wird.
+    result = compute_metrics(nav_history, risk_free_rate_annual=0.0, phase2_start=phase2_start)
 
     nav = pd.Series(nav_values, index=dates)
     returns = nav.pct_change().dropna()
@@ -275,6 +285,39 @@ def test_replay_ledger_defaults_transaction_cost_to_zero_when_column_missing():
     ]
     snapshots = _replay_ledger(trades, initial_cash=100_000.0)
     assert snapshots[-1]["cash"] == pytest.approx(99_000.0)
+
+
+# --- risk_free_rate_annual (2026-09-17: realistischer Default statt 0.0) -----
+
+
+def test_compute_metrics_default_risk_free_rate_is_no_longer_zero():
+    """Vorher war risk_free_rate_annual=0.0 der Default - das unterstellte,
+    "risikofrei" wuerfe 0% Rendite ab, und ueberzeichnete damit den Sharpe.
+    Ohne explizite Angabe muss compute_metrics jetzt DEFAULT_RISK_FREE_RATE_
+    ANNUAL (~4%, US-3-Monats-T-Bill-Anker) verwenden, was den Sharpe
+    gegenueber der alten 0%-Annahme senkt (hoehere Rendite-Huerde)."""
+    nav_values = [100_000, 101_000, 99_500, 102_000, 101_500]
+
+    with_default = compute_metrics(make_nav_history(nav_values, periods_per_year=104))
+    with_zero_rf = compute_metrics(
+        make_nav_history(nav_values, periods_per_year=104), risk_free_rate_annual=0.0
+    )
+
+    assert DEFAULT_RISK_FREE_RATE_ANNUAL > 0.0
+    assert with_default.sharpe_ratio != pytest.approx(with_zero_rf.sharpe_ratio)
+    assert with_default.sharpe_ratio < with_zero_rf.sharpe_ratio
+    # annualized_volatility_pct haengt nicht von der Risk-free-Rate ab.
+    assert with_default.annualized_volatility_pct == pytest.approx(with_zero_rf.annualized_volatility_pct)
+
+
+def test_compute_metrics_uses_default_risk_free_rate_when_not_specified():
+    nav_values = [100_000, 101_000, 99_500, 102_000, 101_500]
+    result_implicit = compute_metrics(make_nav_history(nav_values, periods_per_year=104))
+    result_explicit = compute_metrics(
+        make_nav_history(nav_values, periods_per_year=104),
+        risk_free_rate_annual=DEFAULT_RISK_FREE_RATE_ANNUAL,
+    )
+    assert result_implicit.sharpe_ratio == pytest.approx(result_explicit.sharpe_ratio)
 
 
 def test_compute_metrics_falls_back_to_phase1_annualization_before_regime_change():

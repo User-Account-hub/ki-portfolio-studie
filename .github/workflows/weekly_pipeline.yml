@@ -75,6 +75,7 @@ jobs:
           WATCHLIST_PATH: ${{ vars.WATCHLIST_PATH || './config/watchlist.yaml' }}
           RISK_CONFIG_PATH: ${{ vars.RISK_CONFIG_PATH || './config/risk_config.yaml' }}
           REPORTS_DIR: ${{ vars.REPORTS_DIR || './reports' }}
+          RISK_FREE_RATE_ANNUAL: ${{ vars.RISK_FREE_RATE_ANNUAL || '0.04' }}
         run: python -m src.pipeline
 
       - name: Upload report as workflow artifact
