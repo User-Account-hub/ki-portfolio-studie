@@ -4,6 +4,7 @@ render its fields when present.
 """
 from __future__ import annotations
 
+import datetime
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import pandas as pd
 from src.boundary_conditions import BoundaryConditionCheck
 from src.correlation import CorrelationWarning
 from src.data_quality import DataQualityReport
+from src.event_calendar import EarningsWarning, MacroEvent
 from src.deep_reflection_schema import DeepReflectionOutput
 from src.execution import ExecutedOrderResult
 from src.metrics import MetricsResult
@@ -44,12 +46,15 @@ def _generate(
     still_open_boundary_conditions=None,
     executed_results=None,
     correlation_cluster_count=None,
+    earnings_warnings=None,
+    macro_events=None,
 ) -> str:
     portfolio_row = {"name": "test", "currency": "USD", "benchmark_symbol": "SPY"}
     with tempfile.TemporaryDirectory() as tmp_dir:
         report_path = generate_report(
             portfolio_row, [], executed_results or [], [], "", make_metrics(), EMPTY_DQ_REPORT, deep_reflection,
             triggered_boundary_conditions or [], still_open_boundary_conditions or [], correlation_cluster_count,
+            earnings_warnings or [], macro_events or [],
             tmp_dir,
         )
         return Path(report_path).read_text(encoding="utf-8")
@@ -201,3 +206,26 @@ def test_report_mentions_no_veto_for_correlation():
     Guardrail mit Ablehnungswirkung ist."""
     content = _generate(deep_reflection=None, executed_results=[], correlation_cluster_count=0)
     assert "KEINE automatische Ablehnung" in content
+
+
+# --- Event-Kalender-Hinweis --------------------------------------------------
+
+
+def test_report_shows_no_upcoming_events_when_none():
+    content = _generate(deep_reflection=None)
+    assert "## Event-Kalender-Hinweis" in content
+    assert "_Keine bevorstehenden Ereignisse innerhalb des Zeitfensters._" in content
+
+
+def test_report_shows_earnings_and_macro_events():
+    earnings = [EarningsWarning(symbol="NVDA", earnings_date=datetime.date(2026, 9, 21), trading_days_until=1)]
+    macro = [MacroEvent(name="FOMC", event_date=datetime.date(2026, 10, 28), trading_days_until=2)]
+    content = _generate(deep_reflection=None, earnings_warnings=earnings, macro_events=macro)
+    assert "NVDA berichtet am 2026-09-21 (1 Handelstag(e))" in content
+    assert "FOMC am 2026-10-28 (2 Handelstag(e))" in content
+    assert "_Keine bevorstehenden Ereignisse innerhalb des Zeitfensters._" not in content
+
+
+def test_report_event_calendar_section_mentions_no_veto():
+    content = _generate(deep_reflection=None)
+    assert "kein Verbot" in content or "KEIN automatisches Verbot" in content

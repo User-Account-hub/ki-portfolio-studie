@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from src.boundary_conditions import BoundaryConditionCheck
 from src.data_quality import DataQualityReport
 from src.deep_reflection_schema import DeepReflectionOutput
+from src.event_calendar import EarningsWarning, MacroEvent
 from src.execution import ExecutedOrderResult
 from src.metrics import MetricsResult
 from src.risk_guardrails import ForcedStopLossAction
@@ -33,6 +34,8 @@ def generate_report(
     triggered_boundary_conditions: list[BoundaryConditionCheck],
     still_open_boundary_conditions: list[BoundaryConditionCheck],
     correlation_cluster_count: int | None,
+    earnings_warnings: list[EarningsWarning],
+    macro_events: list[MacroEvent],
     reports_dir: str,
 ) -> Path:
     lines = []
@@ -111,6 +114,24 @@ def generate_report(
         lines.append("_Keine Korrelationswarnungen in diesem Lauf._")
     cluster_display = str(correlation_cluster_count) if correlation_cluster_count is not None else "n/a"
     lines.append(f"**Korrelations-Cluster im aktuellen Portfolio:** {cluster_display}")
+    lines.append("")
+
+    lines.append("## Event-Kalender-Hinweis (informativ, kein Verbot)")
+    lines.append(
+        "Bevorstehende Quartalsberichte (yfinance) und hardcodierte FOMC-/CPI-Termine "
+        "innerhalb der nächsten 3 Handelstage - rein informativ, löst KEIN automatisches "
+        "Verbot aus. Claude erhält denselben Hinweis im Tagesprompt."
+    )
+    if earnings_warnings:
+        lines.append("**Bevorstehende Quartalsberichte:**")
+        for w in earnings_warnings:
+            lines.append(f"- {w.symbol} berichtet am {w.earnings_date} ({w.trading_days_until} Handelstag(e))")
+    if macro_events:
+        lines.append("**Bevorstehende Makro-Termine:**")
+        for m in macro_events:
+            lines.append(f"- {m.name} am {m.event_date} ({m.trading_days_until} Handelstag(e))")
+    if not earnings_warnings and not macro_events:
+        lines.append("_Keine bevorstehenden Ereignisse innerhalb des Zeitfensters._")
     lines.append("")
 
     if deep_reflection is not None:

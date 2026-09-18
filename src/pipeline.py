@@ -34,6 +34,7 @@ from src import (
     db,
     deep_reflection_prompt,
     deep_reflection_schema,
+    event_calendar,
     execution,
     metrics,
     reporting,
@@ -118,6 +119,28 @@ def _compute_correlation_matrix(
     except Exception:
         log.exception("Korrelationsmatrix-Berechnung fehlgeschlagen - wird übersprungen.")
         return pd.DataFrame()
+
+
+def _check_upcoming_events(
+    universe_symbols: list[str],
+) -> tuple[list[event_calendar.EarningsWarning], list[event_calendar.MacroEvent]]:
+    """Event-Kalender-Hinweis: bevorstehende Quartalsberichte (pro Symbol)
+    und hardcodierte FOMC-/CPI-Termine (portfolioweit) - siehe
+    src/event_calendar.py. Rein informativ (Prompt-Kontext für Claude),
+    kein Guardrail. Kein Abbruch bei einem Fehler: liefert dann leere
+    Listen zurück (kein Hinweis diesen Lauf, statt den Lauf zu gefährden)."""
+    today = datetime.date.today()
+    try:
+        earnings_warnings = event_calendar.check_upcoming_earnings(universe_symbols, today)
+    except Exception:
+        log.exception("Earnings-Kalender-Abfrage fehlgeschlagen - wird übersprungen.")
+        earnings_warnings = []
+    try:
+        macro_events = event_calendar.get_upcoming_macro_events(today)
+    except Exception:
+        log.exception("Makro-Termin-Prüfung (FOMC/CPI) fehlgeschlagen - wird übersprungen.")
+        macro_events = []
+    return earnings_warnings, macro_events
 
 
 def _check_boundary_conditions(
@@ -297,6 +320,13 @@ def run() -> None:
         log.info("Berechne rollierende 60-Tage-Korrelationsmatrix für das Universum...")
         correlation_matrix = _compute_correlation_matrix(watchlist.all_symbols(), structured_product_symbols)
 
+        log.info("Prüfe Event-Kalender (Earnings, FOMC/CPI)...")
+        earnings_warnings, macro_events = _check_upcoming_events(watchlist.all_symbols())
+        for w in earnings_warnings:
+            log.info("Event-Hinweis: %s berichtet in %d Handelstag(en) - erhöhtes Ereignisrisiko.", w.symbol, w.trading_days_until)
+        for m in macro_events:
+            log.info("Event-Hinweis: %s in %d Handelstag(en) - erhöhtes Ereignisrisiko fürs Portfolio.", m.name, m.trading_days_until)
+
         log.info("Prüfe Randbedingungen (Kap. 7) offener Positionen...")
         triggered_boundary_conditions, still_open_boundary_conditions = _check_boundary_conditions(
             conn, portfolio_row["id"], current_prices
@@ -361,6 +391,8 @@ def run() -> None:
                 latest_reflection=latest_reflection,
                 triggered_boundary_conditions=triggered_boundary_conditions,
                 still_open_boundary_conditions=still_open_boundary_conditions,
+                earnings_warnings=earnings_warnings,
+                macro_events=macro_events,
             )
 
             log.info("Rufe Claude (%s) für Handelsentscheidung auf...", app_config.claude_model)
@@ -446,6 +478,8 @@ def run() -> None:
             triggered_boundary_conditions,
             still_open_boundary_conditions,
             correlation_cluster_count,
+            earnings_warnings,
+            macro_events,
             app_config.reports_dir,
         )
         log.info("Report geschrieben: %s", report_path)

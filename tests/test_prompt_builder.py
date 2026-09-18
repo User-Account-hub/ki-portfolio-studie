@@ -7,10 +7,15 @@ from __future__ import annotations
 
 import json
 
+import datetime
+
 from src.boundary_conditions import BoundaryConditionCheck
 from src.config import RiskConfig, Watchlist, WatchlistSymbol
+from src.event_calendar import EarningsWarning, MacroEvent
 from src.prompt_builder import (
     _summarize_boundary_condition,
+    _summarize_earnings_warning,
+    _summarize_macro_event,
     _summarize_reflection_for_prompt,
     build_user_prompt,
 )
@@ -85,7 +90,13 @@ def test_summarize_reflection_returns_none_when_raw_response_missing():
 # --- build_user_prompt integration ------------------------------------------
 
 
-def _build_minimal_prompt(latest_reflection=None, triggered_boundary_conditions=None, still_open_boundary_conditions=None):
+def _build_minimal_prompt(
+    latest_reflection=None,
+    triggered_boundary_conditions=None,
+    still_open_boundary_conditions=None,
+    earnings_warnings=None,
+    macro_events=None,
+):
     portfolio_row = {"name": "test", "currency": "USD", "cash_balance": 100_000.0, "benchmark_symbol": "SPY"}
     watchlist = Watchlist(benchmark_symbol="SPY", symbols=[WatchlistSymbol(symbol="AAPL", instrument_type="equity")])
     return build_user_prompt(
@@ -93,6 +104,8 @@ def _build_minimal_prompt(latest_reflection=None, triggered_boundary_conditions=
         latest_reflection=latest_reflection,
         triggered_boundary_conditions=triggered_boundary_conditions,
         still_open_boundary_conditions=still_open_boundary_conditions,
+        earnings_warnings=earnings_warnings,
+        macro_events=macro_events,
     )
 
 
@@ -159,3 +172,41 @@ def test_build_user_prompt_includes_boundary_condition_status():
     payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
     assert payload["boundary_conditions"]["triggered_this_run"][0]["symbol"] == "NVDA"
     assert payload["boundary_conditions"]["still_open"][0]["symbol"] == "CCJ"
+
+
+# --- Event-Kalender-Hinweis --------------------------------------------------
+
+
+def test_summarize_earnings_warning_includes_required_wording():
+    warning = EarningsWarning(symbol="NVDA", earnings_date=datetime.date(2026, 9, 21), trading_days_until=2)
+    summary = _summarize_earnings_warning(warning)
+    assert summary["symbol"] == "NVDA"
+    assert summary["earnings_date"] == "2026-09-21"
+    assert summary["trading_days_until"] == 2
+    assert summary["note"] == "NVDA berichtet in 2 Handelstag(en) - erhöhtes Ereignisrisiko."
+
+
+def test_summarize_macro_event_includes_portfolio_wide_wording():
+    event = MacroEvent(name="FOMC", event_date=datetime.date(2026, 10, 28), trading_days_until=1)
+    summary = _summarize_macro_event(event)
+    assert summary["name"] == "FOMC"
+    assert "FOMC-Termin in 1 Handelstag(en)" in summary["note"]
+    assert "gesamte Portfolio" in summary["note"]
+
+
+def test_build_user_prompt_defaults_upcoming_events_to_empty_lists():
+    prompt = _build_minimal_prompt()
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["upcoming_events"] == {
+        "earnings_within_3_trading_days": [],
+        "macro_events_within_3_trading_days": [],
+    }
+
+
+def test_build_user_prompt_includes_earnings_and_macro_events():
+    earnings = [EarningsWarning(symbol="NVDA", earnings_date=datetime.date(2026, 9, 21), trading_days_until=1)]
+    macro = [MacroEvent(name="CPI", event_date=datetime.date(2026, 10, 14), trading_days_until=2)]
+    prompt = _build_minimal_prompt(earnings_warnings=earnings, macro_events=macro)
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["upcoming_events"]["earnings_within_3_trading_days"][0]["symbol"] == "NVDA"
+    assert payload["upcoming_events"]["macro_events_within_3_trading_days"][0]["name"] == "CPI"

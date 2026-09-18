@@ -142,6 +142,8 @@ def build_user_prompt(
     latest_reflection=None,
     triggered_boundary_conditions: list | None = None,
     still_open_boundary_conditions: list | None = None,
+    earnings_warnings: list | None = None,
+    macro_events: list | None = None,
 ) -> str:
     portfolio_state = {
         "name": portfolio_row["name"],
@@ -222,6 +224,18 @@ def build_user_prompt(
             "triggered_this_run": [_summarize_boundary_condition(c) for c in (triggered_boundary_conditions or [])],
             "still_open": [_summarize_boundary_condition(c) for c in (still_open_boundary_conditions or [])],
         },
+        # Event-Kalender-Hinweis (yfinance-Earnings + hardcodierte FOMC-/
+        # CPI-Termine, siehe event_calendar.py) - rein informativ, KEIN
+        # Verbot. Du entscheidest selbst, ob/wie du das erhoehte
+        # Ereignisrisiko in Positionsgroesse oder Timing einbeziehst.
+        "upcoming_events": {
+            "earnings_within_3_trading_days": [
+                _summarize_earnings_warning(w) for w in (earnings_warnings or [])
+            ],
+            "macro_events_within_3_trading_days": [
+                _summarize_macro_event(m) for m in (macro_events or [])
+            ],
+        },
     }
     return (
         "Aktueller Portfolio-Zustand, Marktdaten und Risikolimiten (JSON):\n\n"
@@ -261,4 +275,27 @@ def _summarize_boundary_condition(condition) -> dict:
         "description": condition.description,
         "check_type": condition.check_type,
         "threshold_price": condition.threshold_price,
+    }
+
+
+def _summarize_earnings_warning(warning) -> dict:
+    """`warning` ist ein event_calendar.EarningsWarning."""
+    return {
+        "symbol": warning.symbol,
+        "earnings_date": warning.earnings_date.isoformat(),
+        "trading_days_until": warning.trading_days_until,
+        "note": f"{warning.symbol} berichtet in {warning.trading_days_until} Handelstag(en) - erhöhtes Ereignisrisiko.",
+    }
+
+
+def _summarize_macro_event(event) -> dict:
+    """`event` ist ein event_calendar.MacroEvent."""
+    return {
+        "name": event.name,
+        "event_date": event.event_date.isoformat(),
+        "trading_days_until": event.trading_days_until,
+        "note": (
+            f"{event.name}-Termin in {event.trading_days_until} Handelstag(en) - "
+            "erhöhtes Ereignisrisiko fürs gesamte Portfolio."
+        ),
     }
