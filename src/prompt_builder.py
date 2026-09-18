@@ -91,6 +91,11 @@ Wichtige Rahmenbedingungen:
 - Long- und Short-Positionen auf Aktien/ETFs sind erlaubt, ebenso strukturierte Produkte \
 (Hebelzertifikate, Mini-Futures, Optionsscheine) auf Titel des Universums.
 - Kein Margin-Trading: Order-Notionals dürfen das verfügbare Cash nicht überschreiten.
+- Wo verfügbar, erhältst du je Titel im Universum grobe Fundamentaldaten (Umsatzwachstum, \
+Verschuldungsgrad, Free Cashflow - Feld "fundamentals" im JSON-Kontext) - das ist \
+ergänzende Information für deine eigene Bewertung, KEIN Ausschlusskriterium. Das \
+Universum ist bewusst spekulativ; ein unprofitabler oder hoch verschuldeter Titel \
+bleibt uneingeschränkt handelbar.
 - Die tatsächliche Durchsetzung aller Risikolimiten (Positionsgrössen, Tagesverlust-Stop, \
 strukturierte-Produkte-Obergrenze, Short-Stop-Loss, max. 1 Trade/Symbol/Tag, max. \
 Segmentgewichtung, korrelierte Krypto/Mining-Exposure, Micro-Cap-Sublimit, \
@@ -144,6 +149,7 @@ def build_user_prompt(
     still_open_boundary_conditions: list | None = None,
     earnings_warnings: list | None = None,
     macro_events: list | None = None,
+    fundamentals: dict | None = None,
 ) -> str:
     portfolio_state = {
         "name": portfolio_row["name"],
@@ -235,6 +241,21 @@ def build_user_prompt(
             "macro_events_within_3_trading_days": [
                 _summarize_macro_event(m) for m in (macro_events or [])
             ],
+        },
+        # Weicher Qualitäts-Score (siehe fundamentals.py) - grobe
+        # Fundamentaldaten je Titel, wo verfügbar. AUSDRÜCKLICH kein
+        # Ausschlusskriterium (siehe Rahmenbedingungen oben) - nur
+        # ergänzender Kontext für deine eigene Bewertung. Symbole ohne
+        # verfügbare Daten (ETFs, strukturierte Produkte, sehr junge
+        # Börsengänge) fehlen hier einfach, statt mit Platzhalterwerten
+        # aufzutauchen.
+        "fundamentals": {
+            symbol: {
+                "revenue_growth": snap.revenue_growth,
+                "debt_to_equity": snap.debt_to_equity,
+                "free_cash_flow": snap.free_cash_flow,
+            }
+            for symbol, snap in (fundamentals or {}).items()
         },
     }
     return (

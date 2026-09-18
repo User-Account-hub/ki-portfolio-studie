@@ -12,7 +12,9 @@ import datetime
 from src.boundary_conditions import BoundaryConditionCheck
 from src.config import RiskConfig, Watchlist, WatchlistSymbol
 from src.event_calendar import EarningsWarning, MacroEvent
+from src.fundamentals import FundamentalSnapshot
 from src.prompt_builder import (
+    SYSTEM_PROMPT,
     _summarize_boundary_condition,
     _summarize_earnings_warning,
     _summarize_macro_event,
@@ -96,6 +98,7 @@ def _build_minimal_prompt(
     still_open_boundary_conditions=None,
     earnings_warnings=None,
     macro_events=None,
+    fundamentals=None,
 ):
     portfolio_row = {"name": "test", "currency": "USD", "cash_balance": 100_000.0, "benchmark_symbol": "SPY"}
     watchlist = Watchlist(benchmark_symbol="SPY", symbols=[WatchlistSymbol(symbol="AAPL", instrument_type="equity")])
@@ -106,6 +109,7 @@ def _build_minimal_prompt(
         still_open_boundary_conditions=still_open_boundary_conditions,
         earnings_warnings=earnings_warnings,
         macro_events=macro_events,
+        fundamentals=fundamentals,
     )
 
 
@@ -210,3 +214,40 @@ def test_build_user_prompt_includes_earnings_and_macro_events():
     payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
     assert payload["upcoming_events"]["earnings_within_3_trading_days"][0]["symbol"] == "NVDA"
     assert payload["upcoming_events"]["macro_events_within_3_trading_days"][0]["name"] == "CPI"
+
+
+# --- Weicher Qualitäts-Score (Fundamentaldaten) -----------------------------
+
+
+def test_build_user_prompt_defaults_fundamentals_to_empty_dict():
+    prompt = _build_minimal_prompt()
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["fundamentals"] == {}
+
+
+def test_build_user_prompt_includes_fundamentals_per_symbol():
+    snapshots = {
+        "AAPL": FundamentalSnapshot(symbol="AAPL", revenue_growth=0.164, debt_to_equity=78.445, free_cash_flow=1.0e11),
+    }
+    prompt = _build_minimal_prompt(fundamentals=snapshots)
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["fundamentals"]["AAPL"] == {
+        "revenue_growth": 0.164,
+        "debt_to_equity": 78.445,
+        "free_cash_flow": 1.0e11,
+    }
+
+
+def test_build_user_prompt_fundamentals_keeps_missing_fields_as_none():
+    snapshots = {"SOME": FundamentalSnapshot(symbol="SOME", revenue_growth=0.05, debt_to_equity=None, free_cash_flow=None)}
+    prompt = _build_minimal_prompt(fundamentals=snapshots)
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["fundamentals"]["SOME"]["debt_to_equity"] is None
+    assert payload["fundamentals"]["SOME"]["free_cash_flow"] is None
+
+
+def test_system_prompt_mentions_fundamentals_are_not_a_filter():
+    """Kernaussage des Auftrags: der System-Prompt muss explizit klarstellen,
+    dass Fundamentaldaten kein Ausschlusskriterium sind."""
+    assert "KEIN Ausschlusskriterium" in SYSTEM_PROMPT
+    assert "spekulativ" in SYSTEM_PROMPT

@@ -36,6 +36,7 @@ from src import (
     deep_reflection_schema,
     event_calendar,
     execution,
+    fundamentals,
     metrics,
     reporting,
 )
@@ -141,6 +142,19 @@ def _check_upcoming_events(
         log.exception("Makro-Termin-Prüfung (FOMC/CPI) fehlgeschlagen - wird übersprungen.")
         macro_events = []
     return earnings_warnings, macro_events
+
+
+def _fetch_universe_fundamentals(universe_symbols: list[str]) -> dict[str, fundamentals.FundamentalSnapshot]:
+    """Weicher Qualitäts-Score: grobe Fundamentaldaten je Titel, wo
+    verfügbar - siehe src/fundamentals.py. Rein informativ (Prompt-Kontext
+    für Claude), AUSDRÜCKLICH kein Filter/Guardrail. Kein Abbruch bei
+    einem Fehler: liefert dann ein leeres Dict zurück (kein Kontext diesen
+    Lauf, statt den Lauf zu gefährden)."""
+    try:
+        return fundamentals.fetch_universe_fundamentals(universe_symbols)
+    except Exception:
+        log.exception("Fundamentaldaten-Abfrage fehlgeschlagen - wird übersprungen.")
+        return {}
 
 
 def _check_boundary_conditions(
@@ -327,6 +341,9 @@ def run() -> None:
         for m in macro_events:
             log.info("Event-Hinweis: %s in %d Handelstag(en) - erhöhtes Ereignisrisiko fürs Portfolio.", m.name, m.trading_days_until)
 
+        log.info("Lade grobe Fundamentaldaten für das Universum (weicher Kontext, kein Filter)...")
+        universe_fundamentals = _fetch_universe_fundamentals(watchlist.all_symbols())
+
         log.info("Prüfe Randbedingungen (Kap. 7) offener Positionen...")
         triggered_boundary_conditions, still_open_boundary_conditions = _check_boundary_conditions(
             conn, portfolio_row["id"], current_prices
@@ -393,6 +410,7 @@ def run() -> None:
                 still_open_boundary_conditions=still_open_boundary_conditions,
                 earnings_warnings=earnings_warnings,
                 macro_events=macro_events,
+                fundamentals=universe_fundamentals,
             )
 
             log.info("Rufe Claude (%s) für Handelsentscheidung auf...", app_config.claude_model)
