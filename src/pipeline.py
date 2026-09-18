@@ -28,6 +28,7 @@ import pandas as pd
 from src import (
     boundary_conditions,
     broker_alpaca,
+    correlation,
     data_fetch,
     data_quality,
     db,
@@ -84,6 +85,39 @@ def _run_data_quality_checks(
         log.exception("Kurshistorien-Abruf (Datenqualität) fehlgeschlagen - wird übersprungen.")
 
     return data_quality.build_report(yfinance_prices, alpaca_prices, price_histories)
+
+
+# Puffer über die eigentlich benötigten 60 Handelstage hinaus, damit
+# Wochenenden/Feiertage genug Handelstage für ein volles 60-Tage-
+# Renditefenster übrig lassen (60 Handelstage ~ 84-90 Kalendertage).
+CORRELATION_FETCH_LOOKBACK_DAYS = 120
+
+
+def _compute_correlation_matrix(
+    universe_symbols: list[str],
+    structured_product_symbols: set[str],
+):
+    """Rollierende 60-Tage-Korrelationsmatrix (Tagesrenditen) über das
+    gesamte Anlage-Universum - siehe src/correlation.py für die eigentliche
+    Berechnung und die Einordnung als Beobachtungsgrösse ohne Veto-Wirkung.
+
+    Bewusst ein eigener, separater yfinance-Download (dasselbe akzeptierte
+    Duplikations-Muster wie bei data_quality.py/metrics.py - siehe dortige
+    Kommentare) statt eine der bestehenden Kurshistorien-Abfragen
+    wiederzuverwenden. Kein Abbruch bei einem Fehler: liefert dann eine
+    leere DataFrame zurück, die den Warn-/Cluster-Check zu einem No-Op
+    macht (siehe correlation.py's Leerlauf-Verhalten).
+    """
+    try:
+        price_histories = data_fetch.fetch_price_histories(
+            universe_symbols,
+            lookback_days=CORRELATION_FETCH_LOOKBACK_DAYS,
+            known_unresolvable_symbols=structured_product_symbols,
+        )
+        return correlation.compute_correlation_matrix(price_histories)
+    except Exception:
+        log.exception("Korrelationsmatrix-Berechnung fehlgeschlagen - wird übersprungen.")
+        return pd.DataFrame()
 
 
 def _check_boundary_conditions(
@@ -260,6 +294,9 @@ def run() -> None:
         for line in dq_report.log_lines():
             log.warning("Datenqualität: %s", line)
 
+        log.info("Berechne rollierende 60-Tage-Korrelationsmatrix für das Universum...")
+        correlation_matrix = _compute_correlation_matrix(watchlist.all_symbols(), structured_product_symbols)
+
         log.info("Prüfe Randbedingungen (Kap. 7) offener Positionen...")
         triggered_boundary_conditions, still_open_boundary_conditions = _check_boundary_conditions(
             conn, portfolio_row["id"], current_prices
@@ -348,6 +385,7 @@ def run() -> None:
                     broker_client=broker_client,
                     symbol_metadata=symbol_metadata,
                     peak_nav=peak_nav,
+                    correlation_matrix=correlation_matrix,
                 )
             except OrderParsingError as exc:
                 log.error("Konnte Claude-Antwort nicht parsen: %s", exc)
@@ -387,6 +425,15 @@ def run() -> None:
             conn, app_config, portfolio_row, nav_history, metrics_result
         )
 
+        try:
+            open_position_symbols = sorted({r["symbol"] for r in open_position_rows})
+            correlation_cluster_count = correlation.compute_correlation_clusters(
+                open_position_symbols, correlation_matrix
+            )
+        except Exception:
+            log.exception("Korrelations-Cluster-Berechnung fehlgeschlagen - wird im Report als 'n/a' vermerkt.")
+            correlation_cluster_count = None
+
         report_path = reporting.generate_report(
             portfolio_row,
             open_position_rows,
@@ -398,6 +445,7 @@ def run() -> None:
             deep_reflection_result,
             triggered_boundary_conditions,
             still_open_boundary_conditions,
+            correlation_cluster_count,
             app_config.reports_dir,
         )
         log.info("Report geschrieben: %s", report_path)

@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from src import db, execution
@@ -320,3 +321,107 @@ def test_execute_proposed_orders_without_boundary_conditions_stores_nothing():
         "SELECT * FROM boundary_conditions WHERE portfolio_id = ?", (portfolio["id"],)
     ).fetchall()
     assert rows == []
+
+
+# --- correlation (rein dokumentarisch, kein Veto) ----------------------------
+
+
+def _correlation_matrix(pairs: dict[tuple[str, str], float], symbols: list[str]) -> pd.DataFrame:
+    matrix = pd.DataFrame(1.0, index=symbols, columns=symbols)
+    for (a, b), value in pairs.items():
+        matrix.loc[a, b] = value
+        matrix.loc[b, a] = value
+    return matrix
+
+
+def test_execute_proposed_orders_records_correlation_warning_without_veto():
+    """Kernanforderung: eine hohe Korrelation zu einer bestehenden Position
+    wird dokumentiert, blockiert die BUY-Order aber NICHT (kein Guardrail-
+    Veto, anders als die harten Kap.-6.8-Limiten)."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol="AMD", instrument_type="equity",
+        underlying_symbol=None, side="long", delta_quantity=10.0, fill_price=100.0,
+    )
+    correlation_matrix = _correlation_matrix({("NVDA", "AMD"): 0.92}, symbols=["NVDA", "AMD"])
+
+    order = ProposedOrder(symbol="NVDA", instrument_type="equity", side="buy", notional=4_000.0, rationale="test")
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"NVDA": 100.0, "AMD": 100.0}, start_of_run_nav=100_000.0,
+        broker_client=ImmediateFillClient(filled_qty=40.0, filled_avg_price=100.0),
+        correlation_matrix=correlation_matrix,
+    )
+
+    assert results[0].approved is True  # kein Veto trotz hoher Korrelation
+    assert len(results[0].correlation_warnings) == 1
+    warning = results[0].correlation_warnings[0]
+    assert warning.candidate_symbol == "NVDA"
+    assert warning.existing_symbol == "AMD"
+    assert warning.correlation == pytest.approx(0.92)
+
+
+def test_execute_proposed_orders_no_warning_below_threshold():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol="AMD", instrument_type="equity",
+        underlying_symbol=None, side="long", delta_quantity=10.0, fill_price=100.0,
+    )
+    correlation_matrix = _correlation_matrix({("NVDA", "AMD"): 0.5}, symbols=["NVDA", "AMD"])
+
+    order = ProposedOrder(symbol="NVDA", instrument_type="equity", side="buy", notional=4_000.0, rationale="test")
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"NVDA": 100.0, "AMD": 100.0}, start_of_run_nav=100_000.0,
+        broker_client=ImmediateFillClient(filled_qty=40.0, filled_avg_price=100.0),
+        correlation_matrix=correlation_matrix,
+    )
+    assert results[0].correlation_warnings == []
+
+
+def test_execute_proposed_orders_no_correlation_check_for_sell():
+    """Die Pruefung ist explizit auf BUY-Orders beschraenkt."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol="NVDA", instrument_type="equity",
+        underlying_symbol=None, side="long", delta_quantity=10.0, fill_price=100.0,
+    )
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol="AMD", instrument_type="equity",
+        underlying_symbol=None, side="long", delta_quantity=10.0, fill_price=100.0,
+    )
+    correlation_matrix = _correlation_matrix({("NVDA", "AMD"): 0.95}, symbols=["NVDA", "AMD"])
+
+    order = ProposedOrder(symbol="NVDA", instrument_type="equity", side="sell", quantity=10.0, rationale="test")
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"NVDA": 100.0, "AMD": 100.0}, start_of_run_nav=100_000.0,
+        broker_client=ImmediateFillClient(filled_qty=10.0, filled_avg_price=100.0),
+        correlation_matrix=correlation_matrix,
+    )
+    assert results[0].correlation_warnings == []
+
+
+def test_execute_proposed_orders_without_correlation_matrix_is_noop():
+    """`correlation_matrix=None` (Default) darf nicht crashen - z.B. wenn
+    die Matrix-Berechnung fehlgeschlagen ist (siehe pipeline.py)."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+    order = ProposedOrder(symbol="NVDA", instrument_type="equity", side="buy", notional=4_000.0, rationale="test")
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"NVDA": 100.0}, start_of_run_nav=100_000.0,
+        broker_client=ImmediateFillClient(filled_qty=40.0, filled_avg_price=100.0),
+    )
+    assert results[0].correlation_warnings == []

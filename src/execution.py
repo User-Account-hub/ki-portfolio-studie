@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from src import broker_alpaca, db
+import pandas as pd
+
+from src import broker_alpaca, correlation, db
 from src.config import RiskConfig
 from src.order_schema import STRUCTURED_INSTRUMENT_TYPES, TRADABLE_INSTRUMENT_TYPES, OrderSide, ProposedOrder
 from src.risk_guardrails import (
@@ -62,6 +64,9 @@ class ExecutedOrderResult:
     reasons: list[str]
     trade_id: int | None = None
     fill_price: float | None = None
+    # Korrelations-Beobachtung (rein dokumentarisch, kein Guardrail - siehe
+    # src/correlation.py) - nur fuer genehmigte BUY-Orders befuellt.
+    correlation_warnings: list[correlation.CorrelationWarning] = field(default_factory=list)
 
 
 def resolve_price(symbol: str, underlying_symbol: str | None, current_prices: dict[str, float]) -> float:
@@ -307,6 +312,7 @@ def execute_proposed_orders(
     broker_client,
     symbol_metadata: dict | None = None,
     peak_nav: float | None = None,
+    correlation_matrix: pd.DataFrame | None = None,
 ) -> list[ExecutedOrderResult]:
     results: list[ExecutedOrderResult] = []
     risk_check_log = []
@@ -343,6 +349,25 @@ def execute_proposed_orders(
             continue
 
         order_side = OrderSide(order.side)
+
+        # Korrelations-Beobachtung (rein dokumentarisch, kein Guardrail) -
+        # vor der Ausfuehrung, nur fuer BUY-Orders. `open_position_rows` ist
+        # hier bereits der Stand NACH allen vorherigen Orders dieses Laufs
+        # (siehe Neu-Abfrage oben), erfasst also auch bereits in diesem
+        # Lauf eroeffnete Positionen.
+        correlation_warnings: list[correlation.CorrelationWarning] = []
+        if order_side == OrderSide.BUY and correlation_matrix is not None and not correlation_matrix.empty:
+            existing_symbols = [r["symbol"] for r in open_position_rows]
+            correlation_warnings = correlation.check_correlation_to_existing_positions(
+                order.symbol, existing_symbols, correlation_matrix
+            )
+            for w in correlation_warnings:
+                log.warning(
+                    "Korrelations-Beobachtung: %s korreliert mit bestehender Position %s (%.2f) - "
+                    "kein Veto, nur dokumentiert.",
+                    w.candidate_symbol, w.existing_symbol, w.correlation,
+                )
+
         fill, source = _route_fill(
             order_side,
             order.symbol,
@@ -371,7 +396,12 @@ def execute_proposed_orders(
 
         # Neu einlesen der Portfolio-Zeile für aktuellen cash_balance vor jedem Trade.
         portfolio_row = db.get_portfolio(conn, portfolio_row["name"])
-        results.append(ExecutedOrderResult(order=order, approved=True, reasons=[], fill_price=fill.filled_price))
+        results.append(
+            ExecutedOrderResult(
+                order=order, approved=True, reasons=[], fill_price=fill.filled_price,
+                correlation_warnings=correlation_warnings,
+            )
+        )
 
         trades_today[order.symbol] = trades_today.get(order.symbol, 0) + 1
 

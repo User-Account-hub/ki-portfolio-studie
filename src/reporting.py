@@ -32,6 +32,7 @@ def generate_report(
     deep_reflection: DeepReflectionOutput | None,
     triggered_boundary_conditions: list[BoundaryConditionCheck],
     still_open_boundary_conditions: list[BoundaryConditionCheck],
+    correlation_cluster_count: int | None,
     reports_dir: str,
 ) -> Path:
     lines = []
@@ -93,6 +94,23 @@ def generate_report(
             lines.append(f"- **{c.symbol}** ({note}): {c.description}")
     if not triggered_boundary_conditions and not still_open_boundary_conditions:
         lines.append("_Keine offenen Randbedingungen._")
+    lines.append("")
+
+    lines.append("## Korrelations-Beobachtungen (Beobachtungsgrösse, kein Guardrail)")
+    lines.append(
+        "Rollierende 60-Tage-Korrelation der Tagesrenditen über das Anlage-Universum. "
+        "Eine Korrelation > 0.85 zu einer bestehenden Position wird hier dokumentiert, "
+        "löst aber KEINE automatische Ablehnung aus - anders als die harten Kap.-6.8-Limiten."
+    )
+    correlation_warnings = [w for r in executed_results for w in r.correlation_warnings]
+    if correlation_warnings:
+        lines.append("**Warnungen in diesem Lauf:**")
+        for w in correlation_warnings:
+            lines.append(f"- {w.candidate_symbol} vs. bestehende Position {w.existing_symbol}: {w.correlation:.2f}")
+    else:
+        lines.append("_Keine Korrelationswarnungen in diesem Lauf._")
+    cluster_display = str(correlation_cluster_count) if correlation_cluster_count is not None else "n/a"
+    lines.append(f"**Korrelations-Cluster im aktuellen Portfolio:** {cluster_display}")
     lines.append("")
 
     if deep_reflection is not None:

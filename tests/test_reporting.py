@@ -10,9 +10,12 @@ from pathlib import Path
 import pandas as pd
 
 from src.boundary_conditions import BoundaryConditionCheck
+from src.correlation import CorrelationWarning
 from src.data_quality import DataQualityReport
 from src.deep_reflection_schema import DeepReflectionOutput
+from src.execution import ExecutedOrderResult
 from src.metrics import MetricsResult
+from src.order_schema import ProposedOrder
 from src.reporting import generate_report, generate_stress_test_report
 from src.stress_test import PositionWeight, StressPeriodResult
 from src.stress_test_schema import StressTestCommentary
@@ -35,12 +38,19 @@ def make_metrics() -> MetricsResult:
     )
 
 
-def _generate(deep_reflection, triggered_boundary_conditions=None, still_open_boundary_conditions=None) -> str:
+def _generate(
+    deep_reflection,
+    triggered_boundary_conditions=None,
+    still_open_boundary_conditions=None,
+    executed_results=None,
+    correlation_cluster_count=None,
+) -> str:
     portfolio_row = {"name": "test", "currency": "USD", "benchmark_symbol": "SPY"}
     with tempfile.TemporaryDirectory() as tmp_dir:
         report_path = generate_report(
-            portfolio_row, [], [], [], "", make_metrics(), EMPTY_DQ_REPORT, deep_reflection,
-            triggered_boundary_conditions or [], still_open_boundary_conditions or [], tmp_dir,
+            portfolio_row, [], executed_results or [], [], "", make_metrics(), EMPTY_DQ_REPORT, deep_reflection,
+            triggered_boundary_conditions or [], still_open_boundary_conditions or [], correlation_cluster_count,
+            tmp_dir,
         )
         return Path(report_path).read_text(encoding="utf-8")
 
@@ -154,3 +164,40 @@ def test_stress_test_report_shows_na_for_periods_without_usable_data():
 
     assert "| n/a |" in content
     assert "RECENT_IPO" in content
+
+
+# --- Korrelations-Beobachtungen -----------------------------------------------
+
+
+def _make_buy_order(symbol: str) -> ProposedOrder:
+    return ProposedOrder(symbol=symbol, instrument_type="equity", side="buy", quantity=1, rationale="test")
+
+
+def test_report_shows_no_correlation_warnings_when_none():
+    content = _generate(deep_reflection=None, executed_results=[], correlation_cluster_count=1)
+    assert "## Korrelations-Beobachtungen" in content
+    assert "_Keine Korrelationswarnungen in diesem Lauf._" in content
+    assert "**Korrelations-Cluster im aktuellen Portfolio:** 1" in content
+
+
+def test_report_shows_correlation_warnings_from_executed_results():
+    result = ExecutedOrderResult(
+        order=_make_buy_order("NVDA"), approved=True, reasons=[], fill_price=100.0,
+        correlation_warnings=[CorrelationWarning(candidate_symbol="NVDA", existing_symbol="AMD", correlation=0.91)],
+    )
+    content = _generate(deep_reflection=None, executed_results=[result], correlation_cluster_count=2)
+    assert "NVDA vs. bestehende Position AMD: 0.91" in content
+    assert "**Korrelations-Cluster im aktuellen Portfolio:** 2" in content
+    assert "_Keine Korrelationswarnungen in diesem Lauf._" not in content
+
+
+def test_report_shows_na_for_cluster_count_when_unavailable():
+    content = _generate(deep_reflection=None, executed_results=[], correlation_cluster_count=None)
+    assert "**Korrelations-Cluster im aktuellen Portfolio:** n/a" in content
+
+
+def test_report_mentions_no_veto_for_correlation():
+    """Kernaussage: der Report muss explizit klarstellen, dass dies kein
+    Guardrail mit Ablehnungswirkung ist."""
+    content = _generate(deep_reflection=None, executed_results=[], correlation_cluster_count=0)
+    assert "KEINE automatische Ablehnung" in content
