@@ -176,6 +176,26 @@ python -m src.pipeline
 
 Ein Report landet in `reports/report_<timestamp>.md`.
 
+### 7. Historischer Stresstest (Thesis Kap. 11.2, manuell/on-demand)
+
+```bash
+python -m src.stress_test
+```
+
+Backtestet die **aktuellen offenen Positionen** (gewichtet nach heutigem
+Marktwert) gegen vier feste historische Krisenfenster (GFC 2008, Covid-Crash
+2020, Zinswende-Bärenmarkt 2022, Q4-Selloff 2018) und lässt Claude die
+mechanisch berechneten Drawdown-Zahlen kommentieren. **Nicht** Teil des
+automatischen Crons - rechenintensiv (mehrjährige Kurshistorien + ein
+zusätzlicher Claude-Aufruf) und ein Validierungswerkzeug für die Thesis,
+kein tägliches Betriebssignal. Ergebnis landet in
+`reports/stress_test_<timestamp>.md`, mit einem expliziten
+Kontaminations-Vorbehalt: die mechanischen Kennzahlen sind reine
+Kursdaten-Berechnungen, aber Claudes Kommentar betrifft öffentlich
+extensiv dokumentierte Ereignisse, deren tatsächlichen Verlauf das Modell
+mit hoher Wahrscheinlichkeit bereits aus Trainingsdaten kennt (siehe
+`src/stress_test.py`-Moduldocstring für die Einordnung).
+
 ## GitHub Actions: täglicher Lauf (seit Regimewechsel 2026-09-10)
 
 Der Workflow `.github/workflows/weekly_pipeline.yml` läuft **werktäglich

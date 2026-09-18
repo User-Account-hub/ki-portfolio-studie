@@ -7,11 +7,15 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pandas as pd
+
 from src.boundary_conditions import BoundaryConditionCheck
 from src.data_quality import DataQualityReport
 from src.deep_reflection_schema import DeepReflectionOutput
 from src.metrics import MetricsResult
-from src.reporting import generate_report
+from src.reporting import generate_report, generate_stress_test_report
+from src.stress_test import PositionWeight, StressPeriodResult
+from src.stress_test_schema import StressTestCommentary
 
 EMPTY_DQ_REPORT = DataQualityReport(price_deviations=[], missing_trading_days=[], outlier_moves=[])
 
@@ -96,3 +100,57 @@ def test_report_shows_triggered_and_still_open_boundary_conditions():
     assert "nicht automatisch prüfbar" in content
     assert "Schwelle 250.00" in content
     assert "_Keine offenen Randbedingungen._" not in content
+
+
+# --- generate_stress_test_report (Kap. 11.2) --------------------------------
+
+
+def test_stress_test_report_always_shows_contamination_caveat_banner():
+    """Kernanforderung: der Kontaminations-Hinweis muss IMMER erscheinen,
+    unabhaengig vom Inhalt der Ergebnisse."""
+    portfolio_row = {"name": "test"}
+    weights = [PositionWeight(symbol="NVDA", weight=1.0)]
+    results = [
+        StressPeriodResult(
+            name="Covid-Crash 2020", start=pd.Timestamp("2020-02-19"), end=pd.Timestamp("2020-03-23"),
+            max_drawdown_pct=-0.30, included_symbols=["NVDA"], excluded_symbols_no_data=[],
+        )
+    ]
+    commentary = StressTestCommentary(
+        resilience_assessment="Konzentriert im KI-Segment.",
+        most_vulnerable_exposure="NVDA-Position.",
+        contamination_caveat="Kenne den tatsaechlichen Verlauf aus Trainingsdaten.",
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        report_path = generate_stress_test_report(portfolio_row, weights, results, commentary, tmp_dir)
+        content = Path(report_path).read_text(encoding="utf-8")
+
+    assert "Kontaminations-Vorbehalt" in content
+    assert "Kap. 11.2" in content
+    assert "nicht" in content.lower()  # Abgrenzung: mechanische Zahlen NICHT betroffen
+    assert "Covid-Crash 2020" in content
+    assert "-30.00%" in content
+    assert "NVDA-Position." in content
+    assert "Kenne den tatsaechlichen Verlauf aus Trainingsdaten." in content
+
+
+def test_stress_test_report_shows_na_for_periods_without_usable_data():
+    portfolio_row = {"name": "test"}
+    weights = [PositionWeight(symbol="RECENT_IPO", weight=1.0)]
+    results = [
+        StressPeriodResult(
+            name="GFC 2008", start=pd.Timestamp("2008-09-01"), end=pd.Timestamp("2009-03-09"),
+            max_drawdown_pct=None, included_symbols=[], excluded_symbols_no_data=["RECENT_IPO"],
+        )
+    ]
+    commentary = StressTestCommentary(
+        resilience_assessment="Keine Aussage moeglich.",
+        most_vulnerable_exposure="-",
+        contamination_caveat="Keine Daten, daher kein Kontaminationsrisiko fuer diese Periode.",
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        report_path = generate_stress_test_report(portfolio_row, weights, results, commentary, tmp_dir)
+        content = Path(report_path).read_text(encoding="utf-8")
+
+    assert "| n/a |" in content
+    assert "RECENT_IPO" in content

@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from src.boundary_conditions import BoundaryConditionCheck
 from src.data_quality import DataQualityReport
@@ -11,6 +12,13 @@ from src.deep_reflection_schema import DeepReflectionOutput
 from src.execution import ExecutedOrderResult
 from src.metrics import MetricsResult
 from src.risk_guardrails import ForcedStopLossAction
+from src.stress_test_schema import StressTestCommentary
+
+if TYPE_CHECKING:
+    # Nur für Typannotationen - ein Modulebene-Import von src.stress_test
+    # hier würde einen Zirkularimport erzeugen, da stress_test.py umgekehrt
+    # generate_stress_test_report aus diesem Modul aufruft.
+    from src.stress_test import PositionWeight, StressPeriodResult
 
 
 def generate_report(
@@ -143,5 +151,71 @@ def generate_report(
     reports_path = Path(reports_dir)
     reports_path.mkdir(parents=True, exist_ok=True)
     report_file = reports_path / f"report_{now.strftime('%Y-%m-%d_%H%M%S')}.md"
+    report_file.write_text(content, encoding="utf-8")
+    return report_file
+
+
+def generate_stress_test_report(
+    portfolio_row: sqlite3.Row,
+    position_weights: list["PositionWeight"],
+    period_results: list["StressPeriodResult"],
+    commentary: StressTestCommentary,
+    reports_dir: str,
+) -> Path:
+    """Eigenständiges Report-Artefakt für den manuellen historischen
+    Stresstest (Thesis Kap. 11.2, src/stress_test.py) - bewusst getrennt
+    vom täglichen Portfolio-Report (generate_report oben), da ein Stresstest
+    einen festen historischen Zeitraum untersucht statt "Stand heute".
+
+    Der Kontaminations-Hinweis steht ZWINGEND vor jedem Ergebnis - siehe
+    stress_test.py's Modul-Docstring für die vollständige Begründung.
+    """
+    lines = []
+    now = datetime.now()
+    lines.append(f"# Historischer Stresstest - {portfolio_row['name']}")
+    lines.append(f"_Erstellt am {now.strftime('%Y-%m-%d %H:%M')}_\n")
+
+    lines.append("## ⚠️ Kontaminations-Vorbehalt (Thesis Kap. 11.2)")
+    lines.append(
+        "Die mechanischen Drawdown-Kennzahlen unten sind reine Kursdaten-Berechnungen "
+        "ohne LLM-Beteiligung und daher **nicht** von diesem Vorbehalt betroffen. Der "
+        "qualitative Kommentar im Abschnitt \"Analytische Einordnung\" hingegen betrifft "
+        "öffentlich extensiv dokumentierte historische Krisen - Claude kennt deren "
+        "tatsächlichen Verlauf mit hoher Wahrscheinlichkeit bereits aus Trainingsdaten. "
+        "Diese Kommentare testen daher Erklärungsfähigkeit im Rückblick, **nicht** echte "
+        "blinde Risikoeinschätzung. Siehe Claudes eigene Selbsteinschätzung unten "
+        "(\"Kontaminations-Selbsteinschätzung\")."
+    )
+    lines.append("")
+
+    lines.append("## Aktuelle Positionsgewichte")
+    lines.append("| Symbol | Gewicht |")
+    lines.append("|---|---|")
+    for pw in position_weights:
+        lines.append(f"| {pw.symbol} | {pw.weight:+.1%} |")
+    lines.append("")
+
+    lines.append("## Mechanische Ergebnisse (kein Kontaminationsrisiko)")
+    lines.append("| Krise | Zeitraum | Max. Drawdown | Einbezogene Symbole | Ausgeschlossen (keine Historie) |")
+    lines.append("|---|---|---|---|---|")
+    for r in period_results:
+        drawdown = f"{r.max_drawdown_pct:.2%}" if r.max_drawdown_pct is not None else "n/a"
+        lines.append(
+            f"| {r.name} | {r.start.date()} bis {r.end.date()} | {drawdown} | "
+            f"{', '.join(r.included_symbols) or '-'} | {', '.join(r.excluded_symbols_no_data) or '-'} |"
+        )
+    lines.append("")
+
+    lines.append("## Analytische Einordnung (Claude - kontaminationsbehaftet)")
+    lines.append(f"**Robustheits-Einschätzung:** {commentary.resilience_assessment}")
+    lines.append(f"**Anfälligste Exposure:** {commentary.most_vulnerable_exposure}")
+    lines.append(f"**Kontaminations-Selbsteinschätzung:** {commentary.contamination_caveat}")
+    lines.append("")
+
+    content = "\n".join(lines)
+
+    reports_path = Path(reports_dir)
+    reports_path.mkdir(parents=True, exist_ok=True)
+    report_file = reports_path / f"stress_test_{now.strftime('%Y-%m-%d_%H%M%S')}.md"
     report_file.write_text(content, encoding="utf-8")
     return report_file

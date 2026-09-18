@@ -144,6 +144,47 @@ def fetch_price_histories(
     return histories
 
 
+def fetch_price_histories_for_range(
+    symbols: list[str],
+    start: "pd.Timestamp",
+    end: "pd.Timestamp",
+) -> dict[str, pd.Series]:
+    """Fetches daily close-price history per symbol for an explicit,
+    arbitrary historical date range (e.g. a past crisis window) - used by
+    src/stress_test.py (Thesis Kap. 11.2). Unlike fetch_price_histories
+    above (a trailing "N days from today" window), this takes fixed
+    `start`/`end` dates, since a stress test replays a specific past period
+    rather than recent history. Symbols with no data at all in the range
+    (e.g. not yet listed - a common case for the 2008 window) are simply
+    absent from the result, not an error - the caller (stress_test.py)
+    documents this as "excluded, no historical data" rather than failing.
+    """
+    if not symbols:
+        return {}
+
+    data = yf.download(
+        tickers=symbols,
+        start=start,
+        end=end + pd.Timedelta(days=1),
+        interval="1d",
+        group_by="ticker",
+        auto_adjust=True,
+        progress=False,
+        threads=True,
+    )
+
+    histories: dict[str, pd.Series] = {}
+    for symbol in symbols:
+        try:
+            series = data[symbol] if len(symbols) > 1 else data
+            close = series["Close"].dropna()
+            if not close.empty:
+                histories[symbol] = close
+        except (KeyError, IndexError):
+            continue  # Symbol nicht auf yfinance auflösbar oder keine Daten im Zeitraum
+    return histories
+
+
 def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
     """Lightweight helper returning just last close prices, used by risk checks."""
     snapshots = fetch_market_snapshots(symbols, lookback_days=5)
