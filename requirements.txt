@@ -1,9 +1,19 @@
-anthropic>=0.40.0
-yfinance>=0.2.40
-alpaca-py>=0.33.0
-pandas>=2.2.0
-numpy>=1.26.0
-pydantic>=2.7.0
-PyYAML>=6.0.1
-python-dotenv>=1.0.1
-pytest>=8.2.0
+# Exakt gepinnt (2026-09-18, Repo-Haertung) statt offener >=-Ranges - eine
+# zukuenftige Minor-/Major-Version eines Pakets darf nicht unbeobachtet in
+# die CI einfliessen (siehe SECURITY-REVIEW.md, "Dependency pinning /
+# supply chain"). Werte = tatsaechlich installierte, durch die volle
+# Testsuite verifizierte Versionen (siehe `pip freeze`), nicht geraten.
+# Aktualisieren: Version anheben, `pip install -r requirements.txt` neu
+# ausfuehren, volle Testsuite gruen bekommen, dann committen - nicht nur
+# die Zahl hochsetzen. Transitive Abhaengigkeiten sind hiermit bewusst
+# NICHT gepinnt (kein vollstaendiges Lockfile/pip-tools) - das waere ein
+# separater, groesserer Schritt.
+anthropic==1.3.0
+yfinance==1.7.0
+alpaca-py==0.44.0
+pandas==3.0.5
+numpy==2.5.2
+pydantic==2.13.5
+PyYAML==6.0.3
+python-dotenv==1.2.3
+pytest==9.1.1

@@ -127,6 +127,31 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Versionen in `requirements.txt` sind exakt gepinnt (2026-09-18, Repo-Härtung)
+statt offener `>=`-Ranges - siehe Kommentar dort für die Update-Prozedur.
+
+**Optional, für Beiträge/Commits (Repo-Hygiene):**
+
+```bash
+pip install -r requirements-dev.txt
+pre-commit install
+```
+
+Richtet einen lokalen Git-Hook ein, der versehentliche Secret-Commits
+(API-Keys, Tokens) via `detect-secrets` blockiert (`.pre-commit-config.yaml`).
+Läuft zusätzlich bei jedem Push/PR auch in CI
+(`.github/workflows/pre-commit.yml`) - der lokale Hook kann übersprungen
+werden, die CI-Prüfung nicht. Ein echter Fund darf nicht per `--no-verify`
+umgangen werden; ein bekannter False-Positive wird stattdessen per
+`detect-secrets scan --baseline .secrets.baseline` neu erzeugt und
+mitcommittet.
+
+Dependabot (`.github/dependabot.yml`) öffnet wöchentlich automatische
+Update-PRs für Python-Abhängigkeiten und die GitHub-Actions-Workflows.
+Für automatische **Security**-Updates zusätzlich "Dependabot alerts" und
+"Dependabot security updates" unter *Settings → Code security* aktivieren
+(Repo-Einstellung, nicht per Datei setzbar).
+
 ### 2. Umgebungsvariablen konfigurieren
 
 ```bash

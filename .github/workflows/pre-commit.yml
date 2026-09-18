@@ -1,0 +1,19 @@
+name: Pre-commit checks
+
+# Backstop fuer .pre-commit-config.yaml (Secret-Scan via detect-secrets):
+# ein lokaler Git-Hook kann uebersprungen werden (--no-verify, oder schlicht
+# nie installiert) - dieser Workflow fuehrt dieselbe Pruefung unabhaengig
+# davon auf jedem Push/PR aus.
+on:
+  push:
+  pull_request:
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: pre-commit/action@v3.0.1

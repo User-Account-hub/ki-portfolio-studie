@@ -1,0 +1,10 @@
+# Dev-/Repo-Hygiene-Tooling - NICHT Teil des Pipeline-Laufs selbst, daher
+# getrennt von requirements.txt (kein Grund, das die Produktions-Installation
+# aufblaehen zu lassen). Exakt gepinnt aus demselben Grund wie
+# requirements.txt.
+#
+# Einrichtung:
+#   pip install -r requirements-dev.txt
+#   pre-commit install
+pre-commit==4.6.2
+detect-secrets==1.5.0

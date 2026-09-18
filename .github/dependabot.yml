@@ -1,0 +1,29 @@
+# Automatische Update-PRs (inkl. Sicherheits-Patches) fuer Python-
+# Abhaengigkeiten und die GitHub-Actions-Workflows selbst. Setzt die
+# Dependabot-Security-Updates NICHT selbst frei - dafuer muessen
+# "Dependabot alerts" + "Dependabot security updates" unter
+# Settings > Code security fuer dieses Repo aktiviert sein (Repo-Setting,
+# nicht per Datei setzbar). Diese Datei liefert die "Version Updates"
+# (regelmaessige, geplante PRs auf neuere Versionen), die zusammen mit den
+# exakt gepinnten Versionen in requirements.txt erst reproduzierbar
+# nachvollziehbare Upgrades ermoeglichen (siehe requirements.txt-Kommentar).
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(ci)"

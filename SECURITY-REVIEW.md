@@ -5,7 +5,7 @@ tracks findings that are **not** fixed by a code change — operational actions
 and recommendations. The code-fixable findings are separate PRs.
 
 ## Automated scan results (clean)
-- **Secret scan** (gitleaks, full 28-commit history): 0 leaks. `.env` is git-ignored and untracked; only `.env.example` (placeholders) is committed; no key material in the committed `db/portfolio.db` or `reports/`.
+- **Secret scan** (gitleaks, full 28-commit history): 0 leaks. `.env` is git-ignored and untracked; only `.env.example` (placeholders) is committed; no key material in the committed `db/portfolio.db` or `reports/`. **Added 2026-09-18:** a `detect-secrets` pre-commit hook (`.pre-commit-config.yaml`, `.secrets.baseline`) now blocks new secret commits going forward, enforced both locally (`pre-commit install`) and in CI (`.github/workflows/pre-commit.yml`) so a skipped local hook doesn't leave a gap.
 - **SAST** (semgrep, 290 rules): 0 findings.
 - **SQL**: fully parameterised — no injection.
 - **Dependencies** (OSV, PyPI): 0 findings at CVSS ≥ 7.0. See INFO-7.
@@ -40,16 +40,23 @@ disclosed if the repo is ever made public.
 scrub first, or move the ledger/reports to a workflow artifact / dedicated
 private data branch rather than the code repo.
 
-## INFO — Dependency pinning / supply chain
-All 9 dependencies use unpinned `>=` constraints with no lockfile, so CI is not
-reproducible and a future release resolves in unseen. Today's OSV scan found
+## ~~INFO — Dependency pinning / supply chain~~ (addressed 2026-09-18)
+~~All 9 dependencies use unpinned `>=` constraints with no lockfile, so CI is not
+reproducible and a future release resolves in unseen.~~ Today's OSV scan found
 nothing ≥ CVSS 7.0 (the Low/Med hits — python-dotenv `set_key`, pytest tmpdir,
 anthropic memory-tool, pydantic ReDoS — are outside the permitted range or
-unreachable by how the code uses the libs), but the posture is the exact
-condition that lets a medium CVE slip in.
+unreachable by how the code uses the libs), but the posture was the exact
+condition that lets a medium CVE slip in unnoticed.
 
-**Recommendation:** pin exact, hash-locked versions (pip-tools / uv); ideally
-split dependency install from the `contents: write` commit step in CI.
+**Done:** all 9 direct dependencies in `requirements.txt` are now pinned to
+exact, test-verified versions (`==`, not `>=`); Dependabot
+(`.github/dependabot.yml`) opens weekly update PRs for both the `pip` and
+`github-actions` ecosystems. **Still open (manual, repo Settings):** enable
+"Dependabot alerts" + "Dependabot security updates" under *Settings → Code
+security* — not settable via a committed file. **Not done:** a full
+hash-locked transitive-dependency lockfile (pip-tools / uv) - a separate,
+larger step than pinning the direct dependencies; splitting dependency
+install from the `contents: write` commit step in CI remains open too.
 
 ## INFO — No retry/backoff or failure alerting
 A failed Anthropic/Alpaca call ends the run with exit 1, visible only in the
