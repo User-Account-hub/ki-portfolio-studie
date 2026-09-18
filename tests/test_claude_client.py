@@ -118,7 +118,10 @@ def test_default_max_tokens_gives_headroom_after_max_tokens_incident(monkeypatch
     (effort="max", max_tokens=16000) war dieses Szenario mit der damaligen
     Konfiguration reproduzierbar; der Fix stellt zwar keine Garantie gegen
     jedes Szenario dar, muss aber zumindest den damaligen Default
-    (max_tokens=16000) durch eine hoehere Sicherheitsmarge ersetzt haben."""
+    (max_tokens=16000) durch eine hoehere Sicherheitsmarge ersetzt haben. v8
+    (2026-09-18) erhoeht den Default weiter auf 40000 (siehe claude_client.py
+    v8-Docstring) - der Test nutzt bewusst den aktuellen Default statt eines
+    hartcodierten Werts."""
     only_thinking_response = SimpleNamespace(
         stop_reason="max_tokens",
         content=[SimpleNamespace(type="thinking", thinking="...")],
@@ -130,7 +133,7 @@ def test_default_max_tokens_gives_headroom_after_max_tokens_incident(monkeypatch
 
     assert result == ""
     sent_kwargs = FakeAnthropicClient.last_messages.last_kwargs
-    assert sent_kwargs["max_tokens"] == 32000 > 16000
+    assert sent_kwargs["max_tokens"] == 40000 > 16000
     assert sent_kwargs["output_config"] == {"effort": "high"}
 
 
@@ -147,18 +150,19 @@ def test_uses_streaming_not_create_to_avoid_10_minute_timeout_guard(monkeypatch)
 
     Fix: `.stream()` hat diesen Guard nicht (nur `create()`), ist also fuer
     lange Anfragen zulaessig, ohne effort/max_tokens zurueckzudrehen. v7
-    (2026-09-17) erhoeht max_tokens weiter auf 32000 (siehe claude_client.py
-    v7-Docstring) - der Test nutzt bewusst diesen aktuellen Default, um zu
-    zeigen, dass auch der hoehere Wert `create()` ausloesen wuerde
-    (900s > 600s), `stream()` aber weiterhin unbetroffen bleibt."""
+    (2026-09-17) erhoeht max_tokens weiter auf 32000, v8 (2026-09-18) auf
+    40000 (siehe claude_client.py v7/v8-Docstrings) - der Test nutzt bewusst
+    diesen aktuellen Default, um zu zeigen, dass auch der hoehere Wert
+    `create()` ausloesen wuerde (1125s > 600s), `stream()` aber weiterhin
+    unbetroffen bleibt."""
     real_client = anthropic.Anthropic(api_key="x")
     with pytest.raises(ValueError, match="Streaming is required"):
-        real_client._calculate_nonstreaming_timeout(32000, None)
+        real_client._calculate_nonstreaming_timeout(40000, None)
 
     FakeAnthropicClient.next_response = make_response('{"orders": []}', "end_turn")
     monkeypatch.setattr(claude_client.anthropic, "Anthropic", FakeAnthropicClient)
 
-    result = claude_client.get_trading_decision("system", "user", api_key="x", max_tokens=32000)
+    result = claude_client.get_trading_decision("system", "user", api_key="x", max_tokens=40000)
 
     assert result == '{"orders": []}'
     assert FakeAnthropicClient.last_messages.stream_calls == 1

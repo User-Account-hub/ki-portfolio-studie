@@ -13,7 +13,7 @@ def get_trading_decision(
     user_prompt: str,
     api_key: str,
     model: str = "claude-sonnet-5",
-    max_tokens: int = 32000,
+    max_tokens: int = 40000,
 ) -> str:
     """Calls Claude and returns the raw text of its response.
 
@@ -101,6 +101,26 @@ def get_trading_decision(
     Operation-Timeout (httpx-Semantik), keine Obergrenze fuer die
     Gesamtdauer eines Streams, solange der Server weiter Chunks liefert.
     32000 max_tokens loesen also keine erneute v6-Regression aus.
+
+    v8 (2026-09-18, proaktive Anpassung wegen des heute ergaenzten Kontexts -
+    Korrelations-/Cluster-Hinweis, Earnings-/Makro-Event-Kalender und
+    Qualitaets-Kontext-Score kommen zur v7-Anforderungsliste hinzu und
+    vergroessern System- UND User-Prompt weiter): `max_tokens` von 32000 auf
+    40000 erhoeht, um bei ausfuehrlicheren Antworten erneut Sicherheitsmarge
+    zu den v4/v5-Truncation-/Leer-Antwort-Vorfaellen zu haben. Wie schon bei
+    v7 erneut direkt im installierten SDK-Quellcode geprueft (weiterhin
+    Version 1.3.0, seit v7 unveraendert): `_base_client.py::
+    _calculate_nonstreaming_timeout` (Zeile ~748) haengt einzig von
+    `max_tokens` ab (`expected_time = 3600s * max_tokens / 128_000`,
+    `default_time = 600s`) - bei 40000 waeren das 1125s, wuerde also `create()`
+    weiterhin blockieren (noch deutlicher als die 900s bei 32000). Das ist
+    aber irrelevant, weil `resources/messages/messages.py` unveraendert zeigt,
+    dass NUR `create()` (Zeile ~948) und `parse()` (Zeile ~1136) diesen Check
+    aufrufen - `stream()` (Zeile ~1000, der hier genutzte Pfad) tut es an
+    keiner Stelle, unabhaengig vom `max_tokens`-Wert. Damit bleibt die
+    v6/v7-Analyse bei 40000 unveraendert gueltig; einzige generische Grenze
+    bleibt weiterhin `DEFAULT_TIMEOUT`s Pro-Chunk-Timeout (600s), keine
+    Gesamtdauer-Obergrenze fuer einen laufenden Stream.
     """
     # Strips accidental whitespace/newlines from the secret (e.g. a trailing
     # "\n" from how the value was pasted into a CI secret store) - the HTTP
