@@ -183,6 +183,17 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   derselben Standardabweichung zu vermischen. Das Ganze ist eine Näherung
   (Kursbewegungen zwischen Checkpoints auf bereits geschlossenen Positionen
   fehlen), für diese Fallstudie aber ausreichend.
+- **Information Ratio (2026-09-20, `MetricsResult.information_ratio`):**
+  = Alpha (`alpha_pct`, dieselbe kumulierte Rendite-Differenz seit
+  `initial_nav` wie in der Report-Zeile "Alpha vs. Benchmark", direkt
+  daneben ausgegeben) geteilt durch den Tracking Error (annualisierte
+  Standardabweichung der PERIODEN-Renditedifferenz Portfolio minus
+  Benchmark, nicht der kumulierten Differenz) - nutzt denselben Phase-1/2-
+  Annualisierungs-Split wie Volatilität/Sharpe oben, damit nicht zwei
+  unabhängige Checkpoint-Einteilungen für dieselbe Art Kennzahl entstehen.
+  `None`, wenn kein Tracking Error berechenbar ist (zu wenig Perioden, oder
+  Portfolio bewegt sich exakt wie die Benchmark - Standardabweichung 0,
+  keine Division durch Null).
 - **`nav_history`-Tabelle (5. Tabelle, seit Kap.-6.8-Guardrails):** eng
   zweckgebunden - pro Pipeline-Lauf genau ein Eintrag mit dem NAV zu
   Lauf-Beginn. Einziger Zweck: `risk_guardrails.check_circuit_breaker` einen

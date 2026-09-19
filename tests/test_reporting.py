@@ -26,8 +26,8 @@ from src.stress_test_schema import StressTestCommentary
 EMPTY_DQ_REPORT = DataQualityReport(price_deviations=[], missing_trading_days=[], outlier_moves=[])
 
 
-def make_metrics() -> MetricsResult:
-    return MetricsResult(
+def make_metrics(**overrides) -> MetricsResult:
+    defaults = dict(
         current_nav=100_000.0,
         total_return_pct=0.0,
         last_period_return_pct=None,
@@ -38,7 +38,10 @@ def make_metrics() -> MetricsResult:
         alpha_pct=0.0,
         baseline_total_return_pct=0.0,
         baseline_alpha_pct=0.0,
+        information_ratio=None,
     )
+    defaults.update(overrides)
+    return MetricsResult(**defaults)
 
 
 def _generate(
@@ -49,11 +52,13 @@ def _generate(
     correlation_cluster_count=None,
     earnings_warnings=None,
     macro_events=None,
+    metrics=None,
 ) -> str:
     portfolio_row = {"name": "test", "currency": "USD", "benchmark_symbol": "SPY"}
+    metrics = metrics if metrics is not None else make_metrics()
     with tempfile.TemporaryDirectory() as tmp_dir:
         report_path = generate_report(
-            portfolio_row, [], executed_results or [], [], "", make_metrics(), EMPTY_DQ_REPORT, deep_reflection,
+            portfolio_row, [], executed_results or [], [], "", metrics, EMPTY_DQ_REPORT, deep_reflection,
             triggered_boundary_conditions or [], still_open_boundary_conditions or [], correlation_cluster_count,
             earnings_warnings or [], macro_events or [],
             tmp_dir,
@@ -124,6 +129,27 @@ def test_report_documents_both_responses_on_mismatch():
     assert "Erster Aufruf: These bestätigt." in content
     assert "Zweiter Aufruf: These widerlegt." in content
     assert "NVDA-These widerlegt" in content
+
+
+# --- Kennzahlen: Information Ratio (2026-09-20) -------------------------------
+
+
+def test_report_omits_information_ratio_row_when_not_computable():
+    content = _generate(deep_reflection=None, metrics=make_metrics(information_ratio=None))
+    assert "Information Ratio" not in content
+
+
+def test_report_shows_information_ratio_next_to_alpha():
+    content = _generate(deep_reflection=None, metrics=make_metrics(alpha_pct=0.05, information_ratio=0.42))
+    lines = content.splitlines()
+    alpha_index = next(i for i, line in enumerate(lines) if line.startswith("| Alpha vs. Benchmark"))
+    assert "0.42" in lines[alpha_index + 1]
+    assert "Information Ratio" in lines[alpha_index + 1]
+
+
+def test_report_formats_negative_information_ratio():
+    content = _generate(deep_reflection=None, metrics=make_metrics(information_ratio=-1.23))
+    assert "| Information Ratio (Alpha / Tracking Error) | -1.23 |" in content
 
 
 # --- Randbedingungen (Kap. 7) -----------------------------------------------

@@ -120,6 +120,12 @@ class MetricsResult:
     alpha_pct: float
     baseline_total_return_pct: float
     baseline_alpha_pct: float
+    # Information Ratio = alpha_pct / tracking_error_pct (2026-09-20, siehe
+    # compute_metrics fuer die Herleitung von tracking_error_pct und die
+    # Annualisierungs-Logik). None, wenn kein Tracking Error berechenbar ist
+    # (zu wenig Perioden oder Portfolio bewegt sich exakt wie die Benchmark -
+    # std() == 0 -> Division durch Null wird vermieden statt +-inf zu liefern).
+    information_ratio: float | None
 
 
 def _replay_ledger(trades: list[sqlite3.Row], initial_cash: float) -> list[dict]:
@@ -335,6 +341,16 @@ def compute_metrics(
     benchmark = pd.Series(nav_history.benchmark_normalized, index=nav_history.dates)
     returns = nav.pct_change().dropna()
 
+    # Information Ratio (2026-09-20): aktive PERIODEN-Rendite (Portfolio
+    # minus Benchmark je Checkpoint-Intervall, NICHT die kumulierte
+    # Gesamtrendite) - Grundlage fuer den Tracking Error weiter unten. `nav`
+    # und `benchmark` teilen exakt denselben `nav_history.dates`-Index, daher
+    # direkt per Index alignierbar; `benchmark_normalized` enthaelt nie NaN
+    # (reconstruct_nav_history faellt bei fehlendem Kurs auf initial_cash
+    # zurueck), sodass hier keine gesonderte Fehlwert-Behandlung noetig ist.
+    benchmark_returns = benchmark.pct_change()
+    active_returns = returns - benchmark_returns.loc[returns.index]
+
     # Bugfix 2026-09-12: vorher `nav.iloc[-1] / nav.iloc[0] - 1` - das
     # verwechselte "erster Checkpoint dieses Laufs" mit "Studienbeginn".
     # Fiel bisher nicht auf, weil `nav.iloc[0]` in fast allen bisherigen
@@ -358,9 +374,16 @@ def compute_metrics(
     if len(phase2_returns) >= 2 and phase2_returns.std() > 0:
         periods_per_year = PHASE2_PERIODS_PER_YEAR
         vol_returns = phase2_returns
+        # Denselben Phase-1/2-Split wie fuer Vol/Sharpe anwenden (siehe
+        # Modul-Docstring) - Tracking Error ist annualisierungslogisch
+        # dieselbe Art Kennzahl (annualisierte Standardabweichung einer
+        # Renditereihe), muss also konsistent mit derselben Checkpoint-
+        # Einteilung berechnet werden, nicht mit einer zweiten, unabhaengigen.
+        tracking_error_returns = active_returns[is_phase2_return]
     else:
         periods_per_year = nav_history.periods_per_year
         vol_returns = returns
+        tracking_error_returns = active_returns
 
     if len(vol_returns) >= 2 and vol_returns.std() > 0:
         rf_per_period = risk_free_rate_annual / periods_per_year
@@ -369,6 +392,11 @@ def compute_metrics(
     else:
         annualized_vol = None
         sharpe = None
+
+    if len(tracking_error_returns) >= 2 and tracking_error_returns.std() > 0:
+        tracking_error = float(tracking_error_returns.std() * np.sqrt(periods_per_year))
+    else:
+        tracking_error = None
 
     # Bugfix 2026-09-12 (Teil 2): `nav.cummax()` allein kennt nur die lokalen
     # Checkpoints DIESES Laufs - ein Peak, der davor lag (z.B. das
@@ -401,6 +429,15 @@ def compute_metrics(
     baseline = pd.Series(nav_history.baseline_normalized, index=nav_history.dates)
     baseline_total_return = float(baseline.iloc[-1] / nav_history.initial_nav - 1)
 
+    alpha_pct = float(total_return - benchmark_total_return)
+    # Information Ratio = Alpha / Tracking Error. Nutzt bewusst denselben
+    # alpha_pct wie die Report-Zeile "Alpha vs. Benchmark" (kumulierte
+    # Gesamtrendite-Differenz seit initial_nav), NICHT eine separat
+    # annualisierte aktive Rendite - direkt neben genau dieser Zeile
+    # ausgegeben (siehe reporting.py), daher dieselbe Bezugsgroesse. None,
+    # wenn kein Tracking Error berechenbar ist (siehe oben).
+    information_ratio = float(alpha_pct / tracking_error) if tracking_error else None
+
     return MetricsResult(
         current_nav=float(nav.iloc[-1]),
         total_return_pct=float(total_return),
@@ -409,7 +446,8 @@ def compute_metrics(
         sharpe_ratio=sharpe,
         max_drawdown_pct=max_drawdown,
         benchmark_total_return_pct=benchmark_total_return,
-        alpha_pct=float(total_return - benchmark_total_return),
+        alpha_pct=alpha_pct,
         baseline_total_return_pct=baseline_total_return,
         baseline_alpha_pct=float(total_return - baseline_total_return),
+        information_ratio=information_ratio,
     )

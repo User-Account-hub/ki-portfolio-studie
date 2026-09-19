@@ -320,6 +320,95 @@ def test_compute_metrics_uses_default_risk_free_rate_when_not_specified():
     assert result_implicit.sharpe_ratio == pytest.approx(result_explicit.sharpe_ratio)
 
 
+# --- Information Ratio (2026-09-20: Alpha / Tracking Error) ------------------
+
+
+def test_compute_metrics_information_ratio_matches_alpha_over_tracking_error():
+    nav_values = [100_000, 101_000, 102_500, 101_800, 103_000]
+    benchmark_values = [100_000, 100_500, 101_000, 101_200, 101_500]
+    nav_history = make_nav_history(nav_values, periods_per_year=104, benchmark_normalized=benchmark_values)
+
+    result = compute_metrics(nav_history, risk_free_rate_annual=0.0)
+
+    nav = pd.Series(nav_values)
+    benchmark = pd.Series(benchmark_values)
+    returns = nav.pct_change().dropna()
+    benchmark_returns = benchmark.pct_change()
+    active_returns = returns - benchmark_returns.loc[returns.index]
+    expected_tracking_error = float(active_returns.std() * np.sqrt(104))
+    expected_information_ratio = result.alpha_pct / expected_tracking_error
+
+    assert expected_tracking_error > 0  # sanity: Portfolio und Benchmark divergieren tatsaechlich
+    assert result.information_ratio == pytest.approx(expected_information_ratio)
+
+
+def test_compute_metrics_information_ratio_none_when_portfolio_tracks_benchmark_exactly():
+    """std() der aktiven Rendite ist 0, wenn Portfolio und Benchmark exakt
+    gleichlaufen (hier: Benchmark = Portfolio, der Default von
+    make_nav_history) - Tracking Error und damit Information Ratio sind dann
+    nicht definiert, NICHT +-inf oder 0."""
+    nav_values = [100_000, 101_000, 102_500, 101_800, 103_000]
+    nav_history = make_nav_history(nav_values, periods_per_year=104)
+    result = compute_metrics(nav_history)
+    assert result.information_ratio is None
+
+
+def test_compute_metrics_information_ratio_none_with_single_return():
+    nav_history = make_nav_history(
+        [100_000, 101_000], periods_per_year=104, benchmark_normalized=[100_000, 100_500]
+    )
+    result = compute_metrics(nav_history)
+    assert result.information_ratio is None
+
+
+def test_compute_metrics_information_ratio_negative_when_underperforming():
+    nav_values = [100_000, 99_000, 98_500, 97_800]
+    benchmark_values = [100_000, 100_500, 101_000, 101_200]
+    nav_history = make_nav_history(nav_values, periods_per_year=104, benchmark_normalized=benchmark_values)
+
+    result = compute_metrics(nav_history)
+
+    assert result.alpha_pct < 0
+    assert result.information_ratio is not None
+    assert result.information_ratio < 0
+
+
+def test_compute_metrics_information_ratio_uses_phase2_annualization_once_enough_daily_returns_exist():
+    """Tracking Error/Information Ratio muessen denselben Phase-1/2-Split wie
+    Vol/Sharpe verwenden (siehe
+    test_compute_metrics_uses_phase2_annualization_once_enough_daily_returns_exist) -
+    nicht unabhaengig davon annualisiert werden."""
+    phase2_start = pd.Timestamp("2026-09-10")
+    dates = [
+        pd.Timestamp("2026-09-03"),
+        pd.Timestamp("2026-09-07"),
+        pd.Timestamp("2026-09-10"),
+        pd.Timestamp("2026-09-11"),
+        pd.Timestamp("2026-09-14"),
+        pd.Timestamp("2026-09-15"),
+    ]
+    nav_values = [100_000, 100_800, 101_500, 101_200, 101_900, 101_600]
+    benchmark_values = [100_000, 100_200, 100_400, 100_600, 100_500, 100_700]
+    nav_history = make_nav_history(
+        nav_values, periods_per_year=104, dates=dates, benchmark_normalized=benchmark_values,
+    )
+
+    result = compute_metrics(nav_history, risk_free_rate_annual=0.0, phase2_start=phase2_start)
+
+    nav = pd.Series(nav_values, index=dates)
+    benchmark = pd.Series(benchmark_values, index=dates)
+    returns = nav.pct_change().dropna()
+    benchmark_returns = benchmark.pct_change()
+    active_returns = returns - benchmark_returns.loc[returns.index]
+    interval_start_dates = nav.index[:-1]
+    phase2_active_returns = active_returns[interval_start_dates >= phase2_start]
+    assert len(phase2_active_returns) == 3
+
+    expected_tracking_error = float(phase2_active_returns.std() * np.sqrt(PHASE2_PERIODS_PER_YEAR))
+    expected_information_ratio = result.alpha_pct / expected_tracking_error
+    assert result.information_ratio == pytest.approx(expected_information_ratio)
+
+
 def test_compute_metrics_falls_back_to_phase1_annualization_before_regime_change():
     """Vor dem Regimewechsel (oder mit zu wenigen reinen Phase-2-Renditen)
     darf sich am bisherigen Verhalten nichts aendern - reine Phase-1-Historie
