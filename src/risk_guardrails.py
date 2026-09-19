@@ -185,9 +185,20 @@ def check_trade_notional(
 
 
 def check_position_size(
-    order: ProposedOrder, ctx: PortfolioContext, price: float, max_pct_of_portfolio: float
+    order: ProposedOrder,
+    ctx: PortfolioContext,
+    price: float,
+    max_pct_of_portfolio: float,
+    drawdown_size_factor: float = 1.0,
 ) -> RiskCheckResult:
-    """Ensures the resulting position (existing +/- this order) stays within the NAV limit."""
+    """Ensures the resulting position (existing +/- this order) stays within
+    the NAV limit.
+
+    `drawdown_size_factor` (Kap. 6.8 Erweiterung, siehe
+    drawdown_position_size_factor) reduziert `max_pct_of_portfolio` weiter -
+    Default 1.0 (keine Reduktion) hält bestehende Aufrufer/Tests ohne
+    Drawdown-Kontext unverändert kompatibel.
+    """
     existing = ctx.position_for(order.symbol)
     existing_qty = existing.quantity if existing else 0.0
     delta_qty = order.quantity if order.quantity is not None else order_notional(order, price) / price
@@ -198,13 +209,73 @@ def check_position_size(
         return RiskCheckResult.ok()
 
     resulting_notional = resulting_qty * price
-    limit = ctx.nav * max_pct_of_portfolio
+    limit = ctx.nav * max_pct_of_portfolio * drawdown_size_factor
     if resulting_notional > limit:
+        drawdown_note = (
+            f" (Positionslimit drawdown-bedingt auf {drawdown_size_factor:.0%} reduziert)"
+            if drawdown_size_factor < 1.0
+            else ""
+        )
         return RiskCheckResult.reject(
             f"Resultierende Position in {order.symbol} ({resulting_notional:.2f}) "
-            f"übersteigt Limit von {max_pct_of_portfolio:.0%} des NAV ({limit:.2f})."
+            f"übersteigt Limit von {max_pct_of_portfolio:.0%} des NAV ({limit:.2f}){drawdown_note}."
         )
     return RiskCheckResult.ok()
+
+
+def drawdown_position_size_factor(
+    ctx: PortfolioContext,
+    tier1_drawdown_pct: float,
+    tier1_factor: float,
+    tier2_drawdown_pct: float,
+    tier2_factor: float,
+    full_stop_drawdown_pct: float,
+) -> float:
+    """Kap. 6.8 Erweiterung (2026-09-19): abgestufter Drawdown-Schutz für die
+    maximal erlaubte NEUE Einzelpositionsgrösse (check_position_size),
+    zusätzlich zum bestehenden harten Circuit-Breaker (check_circuit_breaker,
+    ausschliesslich für Hebelpositionen). Je tiefer der Drawdown seit dem
+    historischen NAV-Höchststand (ctx.peak_nav - dieselbe bereits vorhandene
+    historical_peak_nav-Infrastruktur wie check_circuit_breaker, siehe
+    db.get_peak_nav), desto kleiner der zurückgegebene Multiplikator auf
+    `max_position_size_pct_of_portfolio`:
+
+      Drawdown <= tier1_drawdown_pct (Default -10%) -> tier1_factor (0.75)
+      Drawdown <= tier2_drawdown_pct (Default -15%) -> tier2_factor (0.50)
+      Drawdown <= full_stop_drawdown_pct (Default -25%, = derselbe Wert wie
+        circuit_breaker_drawdown_pct) -> 0.0 (kompletter Stop neuer/
+        aufstockender Positionen - "wie bisher", siehe check_circuit_breaker)
+      sonst -> 1.0 (keine Reduktion)
+
+    Der TIEFSTE erreichte Tier gewinnt (Funktion prüft von streng nach
+    locker). Erwartet `full_stop_drawdown_pct <= tier2_drawdown_pct <=
+    tier1_drawdown_pct <= 0`; die Caller-seitige Config (risk_config.yaml)
+    ist dafür verantwortlich, keine widersprüchliche Reihenfolge zu pflegen -
+    diese Funktion selbst validiert das nicht (bewusst analog zu den übrigen
+    reinen risk_guardrails-Funktionen, die ihrer Config vertrauen).
+
+    Ohne bekannten Höchststand (ctx.peak_nav None/0, z.B. in Tests ohne
+    vollen Kontext) wird 1.0 (keine Reduktion) angenommen - konsistent mit
+    check_circuit_breaker's Verhalten im selben Fall.
+
+    AUSDRÜCKLICH NICHT für Hebelpositionen/strukturierte Produkte anzuwenden
+    (siehe evaluate_order's Aufrufstelle, die für sie unverändert 1.0
+    übergibt) - deren Verhalten bleibt exklusiv durch check_circuit_breaker
+    geregelt (harter Stop einzig bei full_stop_drawdown_pct, keine
+    Zwischenstufen). Würde diese Funktion auch auf sie angewendet, gälten
+    für dieselben Positionen zwei unterschiedliche Drawdown-Regimes
+    gleichzeitig und ihr bisheriges Verhalten würde sich ändern.
+    """
+    if not ctx.peak_nav:
+        return 1.0
+    current_drawdown = (ctx.nav - ctx.peak_nav) / ctx.peak_nav
+    if current_drawdown <= full_stop_drawdown_pct:
+        return 0.0
+    if current_drawdown <= tier2_drawdown_pct:
+        return tier2_factor
+    if current_drawdown <= tier1_drawdown_pct:
+        return tier1_factor
+    return 1.0
 
 
 def check_structured_products_cap(
@@ -461,6 +532,21 @@ def evaluate_order(
     if order.instrument_type.value in STRUCTURED_INSTRUMENT_TYPES and not config.allow_structured_products:
         return RiskCheckResult.reject("Strukturierte Produkte sind laut Risk-Config nicht erlaubt.")
 
+    # Abgestufter Drawdown-Schutz (siehe drawdown_position_size_factor) -
+    # AUSDRUECKLICH nur fuer Nicht-Hebelpositionen (1.0 = keine Reduktion
+    # fuer Hebelpositionen/strukturierte Produkte, deren Drawdown-Verhalten
+    # unveraendert exklusiv durch check_circuit_breaker unten geregelt wird).
+    drawdown_size_factor = 1.0
+    if not _is_leverage_controlled(order.instrument_type.value, order_leveraged):
+        drawdown_size_factor = drawdown_position_size_factor(
+            ctx,
+            tier1_drawdown_pct=config.drawdown_tier1_pct,
+            tier1_factor=config.drawdown_tier1_position_size_factor,
+            tier2_drawdown_pct=config.drawdown_tier2_pct,
+            tier2_factor=config.drawdown_tier2_position_size_factor,
+            full_stop_drawdown_pct=config.circuit_breaker_drawdown_pct,
+        )
+
     checks = [
         check_daily_loss_stop(ctx, config.daily_loss_stop_pct)
         if order.side in (OrderSide.BUY, OrderSide.SHORT)
@@ -468,7 +554,10 @@ def evaluate_order(
         check_max_trades_per_symbol(order, ctx, config.max_trades_per_symbol_per_day),
         check_no_margin(order, ctx, price, config.allow_margin),
         check_trade_notional(order, ctx, price, config.max_trade_notional_pct_of_nav),
-        check_position_size(order, ctx, price, config.max_position_size_pct_of_portfolio),
+        check_position_size(
+            order, ctx, price, config.max_position_size_pct_of_portfolio,
+            drawdown_size_factor=drawdown_size_factor,
+        ),
         check_structured_products_cap(
             order, ctx, price, current_prices, config.structured_products_max_notional_pct_of_nav,
             order_leveraged=order_leveraged,

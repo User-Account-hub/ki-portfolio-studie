@@ -79,7 +79,31 @@ min_cash_pct_of_nav: 0.05
 # Circuit-Breaker: Drawdown seit dem bisherigen NAV-Höchststand, ab dem
 # keine neuen/aufstockenden Hebelpositionen (strukturierte Produkte) mehr
 # eröffnet werden dürfen. Negativer Wert, analog zu daily_loss_stop_pct.
+# Dient gleichzeitig als Voll-Stop-Schwelle der Drawdown-Positionsgrössen-
+# Stufen unten (dort für ALLE Titel, hier nur für Hebelpositionen).
 circuit_breaker_drawdown_pct: -0.25
+
+# Abgestufter Drawdown-Schutz für die max. Einzelpositionsgrösse
+# (max_position_size_pct_of_portfolio oben), zusätzlich zum harten
+# Circuit-Breaker oben: siehe risk_guardrails.drawdown_position_size_factor.
+# Reduziert die maximal erlaubte NEUE/aufstockende Positionsgrösse abgestuft,
+# je tiefer der Drawdown seit dem historischen NAV-Höchststand
+# (db.get_peak_nav - dieselbe Infrastruktur wie beim Circuit-Breaker oben)
+# bereits gefallen ist. Gilt AUSDRÜCKLICH NICHT für Hebelpositionen/
+# strukturierte Produkte - deren Verhalten bleibt unverändert exklusiv
+# durch circuit_breaker_drawdown_pct oben geregelt (harter Stop einzig bei
+# -25%, keine Zwischenstufen).
+# Stufe 1: ab -10% Drawdown auf 75% der sonst erlaubten Positionsgrösse.
+drawdown_tier1_pct: -0.10
+drawdown_tier1_position_size_factor: 0.75
+# Stufe 2: ab -15% Drawdown auf 50% der sonst erlaubten Positionsgrösse.
+drawdown_tier2_pct: -0.15
+drawdown_tier2_position_size_factor: 0.50
+# Stufe 3 (kompletter Stop neuer/aufstockender Positionen, auch für
+# Nicht-Hebeltitel) nutzt bewusst dieselbe Schwelle wie circuit_breaker_
+# drawdown_pct oben (-25%) statt eines weiteren eigenen Werts - "wie
+# bisher" bezogen auf denselben Drawdown-Punkt, an dem bereits der
+# Hebel-Circuit-Breaker greift.
 
 # Feste Kosten-Annahme pro Trade (Spread/Slippage-Pauschale, 2026-09-17):
 # wird bei JEDER Order-Ausführung tatsächlich vom Cash abgezogen (siehe

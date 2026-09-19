@@ -28,6 +28,14 @@ class RiskConfig:
     max_top3_concentration_pct_of_nav: float
     min_cash_pct_of_nav: float
     circuit_breaker_drawdown_pct: float
+    # Abgestufter Drawdown-Schutz fuer die max. Positionsgroesse (2026-09-19,
+    # zusaetzlich zum harten circuit_breaker_drawdown_pct-Stop oben, der bei
+    # Erreichen dieser Schwelle unveraendert auch die Obergrenze dieser
+    # Stufen bildet) - siehe risk_guardrails.drawdown_position_size_factor.
+    drawdown_tier1_pct: float
+    drawdown_tier1_position_size_factor: float
+    drawdown_tier2_pct: float
+    drawdown_tier2_position_size_factor: float
     # Feste Kosten-Annahme pro Trade (Spread/Slippage-Pauschale, 2026-09-17) -
     # Anteil des Notional-Betrags, der bei jeder Order-Ausführung tatsächlich
     # vom Cash abgezogen wird (siehe execution.py). Gilt für beide Richtungen.

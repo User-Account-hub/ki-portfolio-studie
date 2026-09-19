@@ -105,6 +105,22 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   Feld, wird keine Skalierung angewendet (kein unterstellter Default-
   Level). Auch dieser Faktor kann keines der Kap.-6.8-Limiten aushebeln
   und wird pro Trade im Report dokumentiert.
+- **Abgestufter Drawdown-Positionsgrössen-Schutz (2026-09-19,
+  `risk_guardrails.drawdown_position_size_factor`):** Erweitert den
+  bisherigen harten Circuit-Breaker (der ausschliesslich Hebelpositionen
+  komplett stoppt, s.o.) um Zwischenstufen für `check_position_size`
+  (`max_position_size_pct_of_portfolio`), basierend auf demselben
+  historischen NAV-Höchststand (`ctx.peak_nav`/`db.get_peak_nav`) wie der
+  Circuit-Breaker: ab -10% Drawdown wird die max. erlaubte NEUE
+  Positionsgrösse auf 75% reduziert (`drawdown_tier1_pct`/
+  `_position_size_factor` in `risk_config.yaml`), ab -15% auf 50%
+  (`drawdown_tier2_*`), ab -25% komplett gestoppt - dieselbe Schwelle wie
+  `circuit_breaker_drawdown_pct`, damit "wie bisher komplett stoppen" am
+  selben Drawdown-Punkt greift. Gilt **ausdrücklich nicht für
+  Hebelpositionen/strukturierte Produkte** (`evaluate_order` übergibt für
+  sie unverändert Faktor 1.0) - deren Verhalten bleibt exklusiv durch den
+  bestehenden `check_circuit_breaker` geregelt, um nicht zwei
+  unterschiedliche Drawdown-Regimes auf dieselben Positionen anzuwenden.
 - **"Kein Margin-Trading"** wird als "keine gehebelte Kaufkraft über 1x
   Cash hinaus" interpretiert (`risk_guardrails.check_no_margin`). Das für
   Shorting technisch nötige Alpaca-Margin-Konto ist davon ausgenommen, da

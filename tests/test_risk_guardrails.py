@@ -17,6 +17,7 @@ from src.risk_guardrails import (
     check_structured_products_cap,
     check_top3_concentration,
     check_trade_notional,
+    drawdown_position_size_factor,
     evaluate_order,
     evaluate_short_positions_for_stop_loss,
 )
@@ -43,6 +44,10 @@ def make_config(**overrides) -> RiskConfig:
         transaction_cost_pct_of_notional=0.001,
         volatility_scaling_min_factor=0.5,
         volatility_scaling_max_factor=1.5,
+        drawdown_tier1_pct=-0.10,
+        drawdown_tier1_position_size_factor=0.75,
+        drawdown_tier2_pct=-0.15,
+        drawdown_tier2_position_size_factor=0.50,
     )
     defaults.update(overrides)
     return RiskConfig(**defaults)
@@ -166,6 +171,34 @@ def test_position_size_check_ignored_for_sell():
     ctx = make_ctx(nav=100_000.0, positions=[existing])
     result = check_position_size(order, ctx, price=150.0, max_pct_of_portfolio=0.10)
     assert result.approved
+
+
+def test_position_size_drawdown_factor_defaults_to_no_reduction():
+    """Ohne explizit uebergebenen drawdown_size_factor darf sich das
+    bestehende Verhalten nicht aendern (Rueckwaertskompatibilitaet der
+    obigen, bereits laenger bestehenden Tests)."""
+    order = make_order(quantity=10)  # 1500 notional, limit 10% of 100k nav = 10000
+    ctx = make_ctx(nav=100_000.0)
+    result = check_position_size(order, ctx, price=150.0, max_pct_of_portfolio=0.10)
+    assert result.approved
+
+
+def test_position_size_drawdown_factor_reduces_effective_limit():
+    order = make_order(quantity=53)  # 53 * 150 = 7950 notional
+    ctx = make_ctx(nav=100_000.0)
+    # Ohne Reduktion (Faktor 1.0): Limit 10_000 -> genehmigt.
+    assert check_position_size(order, ctx, price=150.0, max_pct_of_portfolio=0.10).approved
+    # Mit Tier-1-Reduktion (Faktor 0.75): Limit 7_500 -> abgelehnt.
+    result = check_position_size(order, ctx, price=150.0, max_pct_of_portfolio=0.10, drawdown_size_factor=0.75)
+    assert not result.approved
+    assert "drawdown-bedingt" in result.reasons[0]
+
+
+def test_position_size_drawdown_factor_zero_blocks_any_new_position():
+    order = make_order(quantity=1)  # 150 notional - trivial klein
+    ctx = make_ctx(nav=100_000.0)
+    result = check_position_size(order, ctx, price=150.0, max_pct_of_portfolio=0.10, drawdown_size_factor=0.0)
+    assert not result.approved
 
 
 # --- structured products cap --------------------------------------------------
@@ -438,6 +471,55 @@ def test_circuit_breaker_noop_without_peak_nav():
     assert result.approved
 
 
+# --- Kap. 6.8 Erweiterung: abgestufter Drawdown-Positionsgroessen-Schutz --------
+
+DRAWDOWN_TIER_KWARGS = dict(
+    tier1_drawdown_pct=-0.10, tier1_factor=0.75,
+    tier2_drawdown_pct=-0.15, tier2_factor=0.50,
+    full_stop_drawdown_pct=-0.25,
+)
+
+
+def test_drawdown_factor_no_reduction_above_tier1():
+    ctx = make_ctx(nav=95_000.0, peak_nav=100_000.0)  # -5%
+    assert drawdown_position_size_factor(ctx, **DRAWDOWN_TIER_KWARGS) == pytest.approx(1.0)
+
+
+def test_drawdown_factor_tier1_at_exact_threshold():
+    ctx = make_ctx(nav=90_000.0, peak_nav=100_000.0)  # exakt -10%
+    assert drawdown_position_size_factor(ctx, **DRAWDOWN_TIER_KWARGS) == pytest.approx(0.75)
+
+
+def test_drawdown_factor_tier1_between_thresholds():
+    ctx = make_ctx(nav=88_000.0, peak_nav=100_000.0)  # -12%
+    assert drawdown_position_size_factor(ctx, **DRAWDOWN_TIER_KWARGS) == pytest.approx(0.75)
+
+
+def test_drawdown_factor_tier2_at_exact_threshold():
+    ctx = make_ctx(nav=85_000.0, peak_nav=100_000.0)  # exakt -15%
+    assert drawdown_position_size_factor(ctx, **DRAWDOWN_TIER_KWARGS) == pytest.approx(0.50)
+
+
+def test_drawdown_factor_tier2_between_thresholds():
+    ctx = make_ctx(nav=80_000.0, peak_nav=100_000.0)  # -20%
+    assert drawdown_position_size_factor(ctx, **DRAWDOWN_TIER_KWARGS) == pytest.approx(0.50)
+
+
+def test_drawdown_factor_full_stop_at_exact_threshold():
+    ctx = make_ctx(nav=75_000.0, peak_nav=100_000.0)  # exakt -25%, wie der bestehende Circuit-Breaker
+    assert drawdown_position_size_factor(ctx, **DRAWDOWN_TIER_KWARGS) == pytest.approx(0.0)
+
+
+def test_drawdown_factor_full_stop_beyond_threshold():
+    ctx = make_ctx(nav=60_000.0, peak_nav=100_000.0)  # -40%
+    assert drawdown_position_size_factor(ctx, **DRAWDOWN_TIER_KWARGS) == pytest.approx(0.0)
+
+
+def test_drawdown_factor_noop_without_peak_nav():
+    ctx = make_ctx(nav=1_000.0, peak_nav=None)
+    assert drawdown_position_size_factor(ctx, **DRAWDOWN_TIER_KWARGS) == pytest.approx(1.0)
+
+
 # --- daily loss stop -----------------------------------------------------------
 
 
@@ -634,4 +716,85 @@ def test_evaluate_order_routes_leveraged_flag_to_circuit_breaker():
         order, ctx, price=15.0, current_prices={}, config=config, order_leveraged=True
     )
     assert not result.approved
+
+
+# --- Kap. 6.8 Erweiterung: evaluate_order-Integration des abgestuften Drawdown-Schutzes ---
+
+
+def test_evaluate_order_tier1_drawdown_reduces_regular_equity_position_size():
+    """Bei -12% Drawdown (Tier 1, Faktor 0.75) muss eine Order abgelehnt
+    werden, die ohne die Reduktion (Faktor 1.0, altes Verhalten) noch
+    innerhalb des Limits gelegen hätte."""
+    config = make_config(max_trade_notional_pct_of_nav=0.10, max_position_size_pct_of_portfolio=0.10)
+    order = make_order(symbol="AAPL", side="buy", quantity=None, notional=8_000.0)
+    ctx = make_ctx(nav=88_000.0, start_of_run_nav=88_000.0, peak_nav=100_000.0)  # -12% Drawdown
+    # Limit ohne Reduktion: 10% von 88_000 = 8_800 -> 8_000 waere genehmigt.
+    # Limit mit Tier-1-Reduktion: 8_800 * 0.75 = 6_600 -> 8_000 wird abgelehnt.
+    result = evaluate_order(order, ctx, price=150.0, current_prices={"AAPL": 150.0}, config=config)
+    assert not result.approved
+    assert any("Resultierende Position" in r for r in result.reasons)
+
+
+def test_evaluate_order_tier2_drawdown_reduces_regular_equity_position_size_further():
+    config = make_config(max_trade_notional_pct_of_nav=0.10, max_position_size_pct_of_portfolio=0.10)
+    order = make_order(symbol="AAPL", side="buy", quantity=None, notional=6_000.0)
+    ctx = make_ctx(nav=85_000.0, start_of_run_nav=85_000.0, peak_nav=100_000.0)  # -15% Drawdown -> Tier 2 (0.50x)
+    # Limit ohne Reduktion: 10% von 85_000 = 8_500 -> 6_000 waere genehmigt.
+    # Limit mit Tier-2-Reduktion: 8_500 * 0.50 = 4_250 -> 6_000 wird abgelehnt.
+    result = evaluate_order(order, ctx, price=150.0, current_prices={"AAPL": 150.0}, config=config)
+    assert not result.approved
+
+
+def test_evaluate_order_below_tier1_threshold_leaves_regular_equity_unaffected():
+    config = make_config(max_trade_notional_pct_of_nav=0.10, max_position_size_pct_of_portfolio=0.10)
+    order = make_order(symbol="AAPL", side="buy", quantity=None, notional=8_000.0)
+    ctx = make_ctx(nav=95_000.0, start_of_run_nav=95_000.0, peak_nav=100_000.0)  # nur -5% Drawdown
+    result = evaluate_order(order, ctx, price=150.0, current_prices={"AAPL": 150.0}, config=config)
+    assert result.approved
+
+
+def test_evaluate_order_full_stop_tier_blocks_new_regular_equity_position():
+    """Bei -25% Drawdown (dieselbe Schwelle wie der bestehende Hebel-
+    Circuit-Breaker) muss AUCH eine ganz normale (nicht gehebelte) neue
+    Kauf-Order abgelehnt werden - "wie bisher komplett stoppen", jetzt nicht
+    mehr nur für Hebelpositionen."""
+    config = make_config()
+    order = make_order(symbol="AAPL", side="buy", quantity=1)  # trivial kleine Order
+    ctx = make_ctx(nav=75_000.0, start_of_run_nav=75_000.0, peak_nav=100_000.0)  # exakt -25% Drawdown
+    result = evaluate_order(order, ctx, price=150.0, current_prices={"AAPL": 150.0}, config=config)
+    assert not result.approved
+
+
+def test_evaluate_order_drawdown_tiers_do_not_apply_to_leveraged_orders():
+    """Kernanforderung: 'unveraendertes Verhalten fuer Hebelpositionen'.
+    Waere der abgestufte Positionsgroessen-Schutz auch fuer Hebelpositionen
+    aktiv, wuerde bei -30% Drawdown (jenseits der Voll-Stop-Schwelle) ZWEI
+    Ablehnungsgruende liefern (Circuit-Breaker UND Positionsgroesse). Die
+    einzige tatsaechlich geltende Ablehnung bleibt der bestehende,
+    unveraenderte Circuit-Breaker."""
+    config = make_config()
+    order = make_order(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", quantity=None, notional=100.0,
+    )
+    ctx = make_ctx(nav=70_000.0, start_of_run_nav=70_000.0, peak_nav=100_000.0)  # -30% Drawdown
+    result = evaluate_order(order, ctx, price=10.0, current_prices={}, config=config)
+    assert not result.approved
+    assert len(result.reasons) == 1
+    assert "Circuit-Breaker" in result.reasons[0]
+
+
+def test_evaluate_order_drawdown_tiers_do_not_apply_to_flagged_leveraged_etf():
+    """Wie oben, aber fuer eine watchlist-markierte gehebelte ETF (NVDL/TSDD-
+    Fall) statt eines strukturierten Produkts - order_leveraged=True statt
+    ueber instrument_type."""
+    config = make_config()
+    order = make_order(symbol="NVDL", instrument_type="etf", side="buy", quantity=None, notional=100.0)
+    ctx = make_ctx(nav=70_000.0, start_of_run_nav=70_000.0, peak_nav=100_000.0)  # -30% Drawdown
+    result = evaluate_order(
+        order, ctx, price=10.0, current_prices={}, config=config, order_leveraged=True
+    )
+    assert not result.approved
+    assert len(result.reasons) == 1
+    assert "Circuit-Breaker" in result.reasons[0]
     assert any("Circuit-Breaker" in r for r in result.reasons)

@@ -62,6 +62,10 @@ def make_risk_config(**overrides) -> RiskConfig:
         transaction_cost_pct_of_notional=0.001,
         volatility_scaling_min_factor=0.5,
         volatility_scaling_max_factor=1.5,
+        drawdown_tier1_pct=-0.10,
+        drawdown_tier1_position_size_factor=0.75,
+        drawdown_tier2_pct=-0.15,
+        drawdown_tier2_position_size_factor=0.50,
     )
     defaults.update(overrides)
     return RiskConfig(**defaults)

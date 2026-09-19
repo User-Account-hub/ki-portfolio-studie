@@ -212,6 +212,15 @@ def build_user_prompt(
         "max_top3_concentration_pct_of_nav": risk_config.max_top3_concentration_pct_of_nav,
         "min_cash_pct_of_nav": risk_config.min_cash_pct_of_nav,
         "circuit_breaker_drawdown_pct": risk_config.circuit_breaker_drawdown_pct,
+        # Abgestufter Drawdown-Schutz (2026-09-19, siehe risk_guardrails.
+        # drawdown_position_size_factor) - reduziert max_position_size_pct_
+        # of_portfolio je nach aktuellem Drawdown seit dem historischen NAV-
+        # Hoechststand; gilt NICHT fuer Hebelpositionen (dafuer weiterhin nur
+        # circuit_breaker_drawdown_pct oben).
+        "drawdown_tier1_pct": risk_config.drawdown_tier1_pct,
+        "drawdown_tier1_position_size_factor": risk_config.drawdown_tier1_position_size_factor,
+        "drawdown_tier2_pct": risk_config.drawdown_tier2_pct,
+        "drawdown_tier2_position_size_factor": risk_config.drawdown_tier2_position_size_factor,
     }
 
     payload = {
