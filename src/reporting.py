@@ -173,13 +173,17 @@ def generate_report(
     lines.append(
         "_Vol-Skalierung: Positionsgrösse buy/short-Orders vor der Guardrail-Prüfung mit "
         "Universums-Ø-Volatilität / Symbol-Volatilität skaliert (rollierende 20-Tage-annualisierte "
-        "Volatilität, Faktor geclippt auf das in risk_config.yaml konfigurierte Band) - "
-        "Verfeinerung innerhalb der Kap.-6.8-Limiten, kein zusätzliches Veto. \"-\" = keine "
-        "Skalierung angewendet (sell/cover oder keine Volatilitätsdaten für das Symbol)._"
+        "Volatilität, Faktor geclippt auf das in risk_config.yaml konfigurierte Band, Default "
+        "0.5x-1.5x). Konviktion: zusätzlicher, bewusst SCHWACHER Multiplikator (hoch ×1.15, "
+        "mittel ×1.0, niedrig ×0.8) auf Basis von Claudes optionaler Selbsteinschätzung je Order "
+        "- schwach gehalten, weil die Konfidenz-Selbsteinschätzung von Sprachmodellen bekanntermassen "
+        "schlecht kalibriert ist (siehe src/position_sizing.py). Beide Faktoren sind eine Verfeinerung "
+        "INNERHALB der Kap.-6.8-Limiten, kein zusätzliches Veto. \"-\" = nicht anwendbar (sell/cover, "
+        "oder bei Vol-Skalierung: keine Volatilitätsdaten für das Symbol)._"
     )
     if executed_results:
-        lines.append("| Symbol | Seite | Status | Vol-Skalierung | Begründung |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| Symbol | Seite | Status | Vol-Skalierung | Konviktion | Begründung |")
+        lines.append("|---|---|---|---|---|---|")
         for r in executed_results:
             status = "✅ ausgeführt" if r.approved else "❌ abgelehnt"
             reason = "; ".join(r.reasons) if r.reasons else r.order.rationale
@@ -191,7 +195,15 @@ def generate_report(
                 )
             else:
                 scaling_display = "-"
-            lines.append(f"| {r.order.symbol} | {r.order.side.value} | {status} | {scaling_display} | {reason} |")
+            if r.conviction_scaling_factor is not None:
+                conviction_label = r.order.conviction.value if r.order.conviction else "unbekannt"
+                conviction_display = f"{conviction_label} ({r.conviction_scaling_factor:.2f}x)"
+            else:
+                conviction_display = "-"
+            lines.append(
+                f"| {r.order.symbol} | {r.order.side.value} | {status} | {scaling_display} | "
+                f"{conviction_display} | {reason} |"
+            )
     else:
         lines.append("_Keine Order-Vorschläge in diesem Lauf._")
     lines.append("")

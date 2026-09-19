@@ -274,6 +274,165 @@ def test_execute_proposed_orders_sell_orders_are_not_scaled():
     assert results[0].order.quantity == pytest.approx(40.0)  # unveraendert
 
 
+def test_execute_proposed_orders_scales_notional_by_conviction():
+    """Konviktion "high" muss die Positionsgroesse leicht erhoehen (Faktor
+    1.15, siehe position_sizing.CONVICTION_SCALING_FACTORS), auch ganz ohne
+    Volatilitaetsdaten fuer das Symbol."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test", conviction="high",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+    )
+
+    assert results[0].approved
+    assert results[0].conviction_scaling_factor == pytest.approx(1.15)
+    assert results[0].order.notional == pytest.approx(4_600.0)  # 4000 * 1.15
+
+
+def test_execute_proposed_orders_low_conviction_scales_down():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test", conviction="low",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+    )
+
+    assert results[0].approved
+    assert results[0].conviction_scaling_factor == pytest.approx(0.8)
+    assert results[0].order.notional == pytest.approx(3_200.0)  # 4000 * 0.8
+
+
+def test_execute_proposed_orders_no_conviction_is_neutral():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",  # kein conviction-Feld
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+    )
+
+    assert results[0].approved
+    assert results[0].conviction_scaling_factor == pytest.approx(1.0)
+    assert results[0].order.notional == pytest.approx(4_000.0)
+
+
+def test_execute_proposed_orders_combines_volatility_and_conviction_multiplicatively():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0, max_trade_notional_pct_of_nav=0.20)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test", conviction="high",
+    )
+    scaling = VolatilityScaling(
+        symbol="MINI-NVDA-LONG-1", annualized_volatility=0.10, universe_avg_volatility=0.15, scaling_factor=1.5,
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        volatility_scaling={"MINI-NVDA-LONG-1": scaling},
+    )
+
+    assert results[0].approved
+    assert results[0].volatility_scaling == scaling
+    assert results[0].conviction_scaling_factor == pytest.approx(1.15)
+    # 4000 * 1.5 (Vola) * 1.15 (Konviktion) = 6900
+    assert results[0].order.notional == pytest.approx(6_900.0)
+
+
+def test_execute_proposed_orders_conviction_scaling_cannot_bypass_guardrail():
+    """Wie bei der Volatilitaets-Skalierung: die Konviktions-Skalierung ist
+    eine Verfeinerung INNERHALB der Kap.-6.8-Limiten, kein Aushebeln - eine
+    durch "high" ueber das Limit gehobene Order muss weiterhin abgelehnt
+    werden."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    # Limit = 5% von 100'000 = 4'600 - das unskalierte Notional (4'000) liegt
+    # knapp darunter, das konviktions-skalierte (4'000 * 1.15 = 4'600) genau
+    # an der Grenze; 4'050 * 1.15 = 4'657.50 liegt klar darueber.
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.046)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_050.0, rationale="test", conviction="high",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+    )
+
+    assert not results[0].approved
+    assert results[0].conviction_scaling_factor == pytest.approx(1.15)
+    assert any("Trade-Notional" in r for r in results[0].reasons)
+
+
+def test_execute_proposed_orders_sell_orders_are_not_conviction_scaled():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol="MINI-NVDA-LONG-1",
+        instrument_type="mini_future", underlying_symbol="NVDA", side="long",
+        delta_quantity=40.0, fill_price=100.0,
+    )
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="sell", quantity=40.0, rationale="test", conviction="high",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+    )
+
+    assert results[0].approved
+    assert results[0].conviction_scaling_factor is None
+    assert results[0].order.quantity == pytest.approx(40.0)
+
+
 def test_execute_proposed_orders_no_scaling_data_leaves_order_unchanged():
     conn = make_conn()
     portfolio = make_portfolio(conn, initial_cash=100_000.0)

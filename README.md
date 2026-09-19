@@ -90,6 +90,21 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   nicht aus. Sell/Cover-Orders und Symbole ohne berechenbare Volatilität
   (zu kurze Historie) werden nicht skaliert. Der angewendete Faktor wird
   pro Trade im Report dokumentiert.
+- **Konviktions-Multiplikator (2026-09-19, `src/position_sizing.py`,
+  `order_schema.ConvictionLevel`):** Claude kann optional je Kauf-/Short-
+  Order eine Konviktion ("high"/"medium"/"low") angeben; sie skaliert die
+  Positionsgrösse zusätzlich zur Volatilitäts-Skalierung (multiplikativ,
+  vor derselben Guardrail-Prüfung), aber bewusst NUR LEICHT (×1.15/×1.0/
+  ×0.8, siehe `CONVICTION_SCALING_FACTORS`) - deutlich schwächer als das
+  0.5x-1.5x-Volatilitätsband. Grund: die Volatilität ist ein tatsächlich
+  gemessenes Marktsignal, während "conviction" eine Selbsteinschätzung des
+  Sprachmodells über die eigene Handelsidee ist - solche LLM-
+  Selbsteinschätzungen sind bekanntermassen schlecht kalibriert
+  (Overconfidence-Bias), ein starker Hebel darauf würde also
+  Selbstüberschätzung statt zusätzlicher Information einpreisen. Fehlt das
+  Feld, wird keine Skalierung angewendet (kein unterstellter Default-
+  Level). Auch dieser Faktor kann keines der Kap.-6.8-Limiten aushebeln
+  und wird pro Trade im Report dokumentiert.
 - **"Kein Margin-Trading"** wird als "keine gehebelte Kaufkraft über 1x
   Cash hinaus" interpretiert (`risk_guardrails.check_no_margin`). Das für
   Shorting technisch nötige Alpaca-Margin-Konto ist davon ausgenommen, da

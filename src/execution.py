@@ -72,6 +72,10 @@ class ExecutedOrderResult:
     # angewendet wurde (sell/cover, oder keine Vola-Daten fuer das Symbol).
     # `order` oben traegt bereits die skalierte Groesse, falls vorhanden.
     volatility_scaling: position_sizing.VolatilityScaling | None = None
+    # Konviktions-Multiplikator (siehe src/position_sizing.py) - None, falls
+    # nicht anwendbar (sell/cover); 1.0, falls anwendbar aber Claude keine
+    # Konviktion angegeben hat oder "medium" gewaehlt wurde.
+    conviction_scaling_factor: float | None = None
 
 
 def resolve_price(symbol: str, underlying_symbol: str | None, current_prices: dict[str, float]) -> float:
@@ -334,18 +338,30 @@ def execute_proposed_orders(
             risk_check_log.append({"symbol": order.symbol, "approved": False, "reasons": [str(exc)]})
             continue
 
-        # Volatilitaetsadjustierte Positionsgroessen-Skalierung (siehe
-        # src/position_sizing.py) - nur fuer positionsaufbauende Seiten
-        # (buy/short) und VOR der Guardrail-Pruefung unten, sodass die
-        # Kap.-6.8-Limiten anschliessend auf die bereits skalierte Groesse
-        # angewendet werden (Verfeinerung innerhalb der Limiten, kein
-        # zusaetzliches Veto und kein Aushebeln der Limiten).
+        # Positionsgroessen-Skalierung (siehe src/position_sizing.py) - nur
+        # fuer positionsaufbauende Seiten (buy/short) und VOR der Guardrail-
+        # Pruefung unten, sodass die Kap.-6.8-Limiten anschliessend auf die
+        # bereits skalierte Groesse angewendet werden (Verfeinerung innerhalb
+        # der Limiten, kein zusaetzliches Veto und kein Aushebeln der
+        # Limiten). Zwei unabhaengige, MULTIPLIKATIV kombinierte Faktoren:
+        # (1) Volatilitaet - ein gemessenes Marktsignal, Band 0.5x-1.5x.
+        # (2) Konviktion - Claudes eigene, optionale Selbsteinschaetzung
+        #     (order.conviction); bewusst ein deutlich schwaecheres Band
+        #     (siehe position_sizing.CONVICTION_SCALING_FACTORS' Kommentar
+        #     fuer die ausfuehrliche Begruendung: unkalibrierte LLM-
+        #     Selbsteinschaetzung soll die Positionsgroesse nur leicht
+        #     nudgen, nicht substanziell treiben).
         scaling: position_sizing.VolatilityScaling | None = None
-        if order.side in (OrderSide.BUY, OrderSide.SHORT) and volatility_scaling:
-            scaling = volatility_scaling.get(order.symbol)
-        if scaling is not None:
+        conviction_factor: float | None = None
+        if order.side in (OrderSide.BUY, OrderSide.SHORT):
+            if volatility_scaling:
+                scaling = volatility_scaling.get(order.symbol)
+            conviction_factor = position_sizing.conviction_scaling_factor(order.conviction)
+
+        combined_factor = (scaling.scaling_factor if scaling is not None else 1.0) * (conviction_factor or 1.0)
+        if combined_factor != 1.0:
             scaled_quantity, scaled_notional = position_sizing.scale_order_size(
-                order.quantity, order.notional, scaling
+                order.quantity, order.notional, combined_factor
             )
             order = order.model_copy(update={"quantity": scaled_quantity, "notional": scaled_notional})
 
@@ -367,7 +383,10 @@ def execute_proposed_orders(
 
         if not check.approved:
             results.append(
-                ExecutedOrderResult(order=order, approved=False, reasons=check.reasons, volatility_scaling=scaling)
+                ExecutedOrderResult(
+                    order=order, approved=False, reasons=check.reasons,
+                    volatility_scaling=scaling, conviction_scaling_factor=conviction_factor,
+                )
             )
             continue
 
@@ -424,6 +443,7 @@ def execute_proposed_orders(
                 order=order, approved=True, reasons=[], fill_price=fill.filled_price,
                 correlation_warnings=correlation_warnings,
                 volatility_scaling=scaling,
+                conviction_scaling_factor=conviction_factor,
             )
         )
 

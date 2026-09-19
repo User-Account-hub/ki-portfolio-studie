@@ -28,6 +28,19 @@ class OrderSide(str, Enum):
     COVER = "cover"    # short reduzieren/schliessen
 
 
+class ConvictionLevel(str, Enum):
+    """Optionale Selbsteinschätzung der Konviktion je Order (2026-09-19),
+    analog zu BoundaryCondition rein optional/best-effort. Skaliert die
+    Positionsgrösse serverseitig NUR LEICHT (siehe src/position_sizing.py,
+    CONVICTION_SCALING_FACTORS) - LLM-Selbsteinschätzungen der eigenen
+    Sicherheit sind bekanntermassen schlecht kalibriert (Überschätzung ist
+    ein dokumentiertes Phänomen), daher bewusst kein Hebel in der
+    Grössenordnung eines tatsächlich gemessenen Signals wie der Volatilität."""
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class BoundaryConditionCheckType(str, Enum):
     """Kap. 7: nur PRICE_ABOVE/PRICE_BELOW sind mechanisch prüfbar (siehe
     boundary_conditions.py) - QUALITATIVE (z.B. Makro-/Earnings-Ereignisse)
@@ -70,6 +83,9 @@ class ProposedOrder(BaseModel):
     underlying_symbol: Optional[str] = None
     stop_loss_price: Optional[float] = Field(default=None, gt=0)
     boundary_conditions: list[BoundaryCondition] = Field(default_factory=list)
+    # Optional, kein Pflichtfeld (siehe ConvictionLevel-Docstring) - fehlt es,
+    # wird die Positionsgroesse nicht konviktions-skaliert (Faktor 1.0).
+    conviction: Optional[ConvictionLevel] = None
     rationale: str
 
     @model_validator(mode="after")

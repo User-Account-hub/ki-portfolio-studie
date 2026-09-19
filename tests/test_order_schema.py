@@ -1,14 +1,14 @@
 """Tests for src/order_schema.py's Kap.-7 BoundaryCondition addition to
 ProposedOrder - optional/best-effort (no order is rejected for omitting it),
 but internally consistent when provided (a price-based check_type needs a
-threshold_price).
+threshold_price) - and for the 2026-09-19 optional ConvictionLevel field.
 """
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from src.order_schema import BoundaryCondition, ProposedOrder
+from src.order_schema import BoundaryCondition, ConvictionLevel, ProposedOrder
 
 
 def make_order(**overrides) -> ProposedOrder:
@@ -59,3 +59,26 @@ def test_order_accepts_multiple_boundary_conditions():
 def test_boundary_condition_defaults_to_qualitative_when_check_type_omitted():
     bc = BoundaryCondition(description="etwas Vages")
     assert bc.check_type.value == "qualitative"
+
+
+# --- conviction (2026-09-19) --------------------------------------------------
+
+
+def test_conviction_defaults_to_none():
+    """Optional/best-effort (analog zu boundary_conditions): eine Order ohne
+    Konviktions-Angabe muss weiterhin gueltig sein und darf keinen Default-
+    Level (z.B. "medium") unterstellen - fehlende Angabe ist etwas anderes
+    als eine explizit mittlere Konviktion."""
+    order = make_order()
+    assert order.conviction is None
+
+
+@pytest.mark.parametrize("level", ["high", "medium", "low"])
+def test_conviction_accepts_valid_levels(level):
+    order = make_order(conviction=level)
+    assert order.conviction == ConvictionLevel(level)
+
+
+def test_conviction_rejects_invalid_level():
+    with pytest.raises(ValidationError):
+        make_order(conviction="very_high")

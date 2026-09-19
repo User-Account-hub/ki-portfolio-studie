@@ -1,12 +1,20 @@
 """Tests for src/position_sizing.py's volatilitätsadjustierte Positionsgrössen-
-Skalierung. Pure functions, no network/DB - Volatilitäten werden hier direkt
-als Eingabe-Dict übergeben (die eigentliche Berechnung aus Kurshistorien
-läuft bereits in data_fetch._annualized_volatility und wird dort getestet)."""
+Skalierung und den (bewusst schwachen) Konviktions-Multiplikator. Pure
+functions, no network/DB - Volatilitäten werden hier direkt als Eingabe-Dict
+übergeben (die eigentliche Berechnung aus Kurshistorien läuft bereits in
+data_fetch._annualized_volatility und wird dort getestet)."""
 from __future__ import annotations
 
 import pytest
 
-from src.position_sizing import VolatilityScaling, compute_scaling_factors, scale_order_size
+from src.order_schema import ConvictionLevel
+from src.position_sizing import (
+    CONVICTION_SCALING_FACTORS,
+    VolatilityScaling,
+    compute_scaling_factors,
+    conviction_scaling_factor,
+    scale_order_size,
+)
 
 # --- compute_scaling_factors -------------------------------------------------
 
@@ -75,21 +83,65 @@ def test_single_symbol_gets_factor_one():
 
 
 def test_scale_order_size_scales_quantity():
-    scaling = VolatilityScaling("A", annualized_volatility=0.1, universe_avg_volatility=0.2, scaling_factor=1.5)
-    qty, notional = scale_order_size(10.0, None, scaling)
+    qty, notional = scale_order_size(10.0, None, 1.5)
     assert qty == pytest.approx(15.0)
     assert notional is None
 
 
 def test_scale_order_size_scales_notional():
-    scaling = VolatilityScaling("A", annualized_volatility=0.4, universe_avg_volatility=0.2, scaling_factor=0.5)
-    qty, notional = scale_order_size(None, 1000.0, scaling)
+    qty, notional = scale_order_size(None, 1000.0, 0.5)
     assert qty is None
     assert notional == pytest.approx(500.0)
 
 
 def test_scale_order_size_leaves_none_fields_as_none():
-    scaling = VolatilityScaling("A", annualized_volatility=0.2, universe_avg_volatility=0.2, scaling_factor=1.0)
-    qty, notional = scale_order_size(None, None, scaling)
+    qty, notional = scale_order_size(None, None, 1.0)
     assert qty is None
     assert notional is None
+
+
+def test_scale_order_size_composes_multiple_factors():
+    """execution.py kombiniert Volatilitaets- und Konviktions-Faktor
+    multiplikativ VOR einem einzigen scale_order_size-Aufruf."""
+    combined = 1.2 * CONVICTION_SCALING_FACTORS[ConvictionLevel.HIGH]
+    qty, _ = scale_order_size(10.0, None, combined)
+    assert qty == pytest.approx(10.0 * 1.2 * 1.15)
+
+
+# --- conviction_scaling_factor --------------------------------------------------
+
+
+def test_conviction_scaling_factor_none_is_neutral():
+    """Fehlende Konviktions-Angabe darf keine Skalierung ausloesen - siehe
+    ProposedOrder.conviction's Optional-Semantik (order_schema.py)."""
+    assert conviction_scaling_factor(None) == pytest.approx(1.0)
+
+
+def test_conviction_scaling_factor_medium_is_neutral():
+    assert conviction_scaling_factor(ConvictionLevel.MEDIUM) == pytest.approx(1.0)
+
+
+def test_conviction_scaling_factor_high_scales_up_slightly():
+    factor = conviction_scaling_factor(ConvictionLevel.HIGH)
+    assert factor == pytest.approx(1.15)
+    assert factor < 1.2  # bewusst schwach - siehe CONVICTION_SCALING_FACTORS' Kommentar
+
+
+def test_conviction_scaling_factor_low_scales_down_slightly():
+    factor = conviction_scaling_factor(ConvictionLevel.LOW)
+    assert factor == pytest.approx(0.8)
+    assert factor > 0.5  # deutlich enger als das Volatilitaets-Band (0.5x-1.5x)
+
+
+def test_conviction_scaling_band_is_narrower_than_volatility_band():
+    """Kernanforderung: die Konviktions-Selbsteinschaetzung eines LLM ist
+    bekanntermassen schlecht kalibriert und darf die Positionsgroesse
+    deshalb deutlich schwaecher beeinflussen als ein gemessenes
+    Marktsignal wie die Volatilitaet (DEFAULT_MIN/MAX_SCALING_FACTOR)."""
+    from src.position_sizing import DEFAULT_MAX_SCALING_FACTOR, DEFAULT_MIN_SCALING_FACTOR
+
+    conviction_spread = CONVICTION_SCALING_FACTORS[ConvictionLevel.HIGH] - CONVICTION_SCALING_FACTORS[
+        ConvictionLevel.LOW
+    ]
+    volatility_spread = DEFAULT_MAX_SCALING_FACTOR - DEFAULT_MIN_SCALING_FACTOR
+    assert conviction_spread < volatility_spread

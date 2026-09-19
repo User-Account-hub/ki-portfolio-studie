@@ -106,6 +106,11 @@ Limiten (inkl. "segment"/"cap_tier" je Titel im Universum), um unnötige Ablehnu
 vermeiden.
 - Antworte AUSSCHLIESSLICH mit einem einzigen validen JSON-Objekt, ohne Markdown-Fences, \
 ohne Fliesstext davor oder danach.
+- Optional kannst du je Kauf-/Short-Order eine Konviktions-Einschätzung angeben (Feld \
+"conviction": "high"/"medium"/"low"). Sie skaliert die Positionsgrösse serverseitig NUR \
+LEICHT (high ×1.15, medium ×1.0, low ×0.8) - bewusst schwach, da eine Selbsteinschätzung \
+deiner eigenen Sicherheit kein verlässliches, kalibriertes Signal ist. Kein Pflichtfeld; \
+ohne Angabe wird wie "medium" (kein Effekt) behandelt.
 
 JSON-Ausgabeschema:
 {
@@ -127,6 +132,7 @@ JSON-Ausgabeschema:
           "threshold_price": number    // Pflicht bei price_above/price_below
         }
       ],
+      "conviction": "high|medium|low", // optional, siehe oben - nur leichter Effekt
       "rationale": "string - kurze Begründung"
     }
   ],

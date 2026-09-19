@@ -25,8 +25,32 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.order_schema import ConvictionLevel
+
 DEFAULT_MIN_SCALING_FACTOR = 0.5
 DEFAULT_MAX_SCALING_FACTOR = 1.5
+
+# Konviktions-Multiplikator (2026-09-19): bewusst SCHWACH (max. +-20%,
+# gegenueber dem 0.5x-1.5x-Band der Volatilitaets-Skalierung oben) und FEST
+# statt konfigurierbar/dynamisch. Grund: die Volatilitaet oben ist ein
+# tatsaechlich GEMESSENES Marktsignal (Standardabweichung realer Renditen),
+# waehrend "conviction" eine SELBSTEINSCHAETZUNG des Sprachmodells ueber die
+# eigene Handelsidee ist. Selbsteinschaetzungen von LLMs zur eigenen
+# Konfidenz sind empirisch bekanntermassen schlecht kalibriert - Modelle
+# neigen dazu, hohe Sicherheit zu aeussern, auch wenn diese nicht mit der
+# tatsaechlichen Trefferquote korreliert (Overconfidence-Bias). Ein starker
+# Hebel auf ein unkalibriertes Signal wuerde also faktisch Selbstueber-
+# schaetzung des Modells statt zusaetzlicher Information in die
+# Positionsgroesse einpreisen - deshalb hier absichtlich ein deutlich
+# engeres Band als bei der Volatilitaets-Skalierung, das selbst im
+# Extremfall (durchgehend "high" bzw. durchgehend "low") die Kap.-6.8-
+# Limiten nur geringfuegig antastet und nie ausser Kraft setzt (dieselbe
+# Guardrail-Pruefung laeuft nach BEIDEN Skalierungen unveraendert weiter).
+CONVICTION_SCALING_FACTORS: dict[ConvictionLevel, float] = {
+    ConvictionLevel.HIGH: 1.15,
+    ConvictionLevel.MEDIUM: 1.0,
+    ConvictionLevel.LOW: 0.8,
+}
 
 
 @dataclass(frozen=True)
@@ -69,15 +93,25 @@ def compute_scaling_factors(
     return result
 
 
+def conviction_scaling_factor(conviction: ConvictionLevel | None) -> float:
+    """Liefert den (schwachen, siehe CONVICTION_SCALING_FACTORS' Kommentar
+    oben) Konviktions-Multiplikator. Fehlt die Selbsteinschätzung (Feld ist
+    optional, siehe order_schema.ConvictionLevel), wird 1.0 angenommen -
+    keine Skalierung, statt eine mittlere Konviktion zu unterstellen."""
+    if conviction is None:
+        return 1.0
+    return CONVICTION_SCALING_FACTORS[conviction]
+
+
 def scale_order_size(
     quantity: float | None,
     notional: float | None,
-    scaling: VolatilityScaling,
+    factor: float,
 ) -> tuple[float | None, float | None]:
     """Skaliert quantity und/oder notional (je nachdem, was die Order trägt -
     ProposedOrder verlangt genau eines von beiden, siehe order_schema.py)
-    mit `scaling.scaling_factor`."""
-    factor = scaling.scaling_factor
+    mit `factor` - typischerweise das Produkt aus Volatilitäts- und
+    Konviktions-Faktor (siehe execution.py)."""
     new_quantity = quantity * factor if quantity is not None else None
     new_notional = notional * factor if notional is not None else None
     return new_quantity, new_notional
