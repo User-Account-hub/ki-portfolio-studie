@@ -125,6 +125,25 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   Cash hinaus" interpretiert (`risk_guardrails.check_no_margin`). Das für
   Shorting technisch nötige Alpaca-Margin-Konto ist davon ausgenommen, da
   Shorting explizit erlaubt ist.
+- **Selbstkonsistenz-Prüfung der monatlichen Tiefenreflexion (2026-09-19,
+  Kap. 6.12.3, `deep_reflection_schema.check_self_consistency`,
+  `pipeline._maybe_run_deep_reflection`):** Claude wird für dieselbe
+  Reflexions-Periode zweimal mit IDENTISCHEM Prompt aufgerufen; die
+  Kernaussagen (`theses_confirmed`/`theses_falsified_or_overdue`, normalisiert
+  verglichen) werden gegenübergestellt. AUSSCHLIESSLICH für die
+  Tiefenreflexion, NICHT für den täglichen Handelsablauf - Kostengründe (die
+  Reflexion läuft nur alle 4 Wochen, der tägliche Ablauf bei jedem Lauf).
+  Bei einer Abweichung gibt es **keine automatische Konfliktlösung**: beide
+  vollständigen Antworten werden dokumentiert (DB: `raw_response` =
+  1. Aufruf, `risk_check_result` trägt den 2. Aufruf + das Konsistenz-
+  Ergebnis; Report: eigener Abschnitt "Selbstkonsistenz-Prüfung", der bei
+  Abweichung beide Antworten vollständig zeigt). Der erste Aufruf dient
+  unverändert - unabhängig vom Konsistenz-Ergebnis - als Grundlage für den
+  nächsten Tagesprompt (`db.get_latest_reflection`). Der Vergleich selbst
+  ist ein einfacher, deterministischer Mengenvergleich normalisierter
+  These-Strings, kein weiterer LLM-Aufruf zur "semantischen" Prüfung - er
+  erkennt daher inhaltlich gleichwertige, aber anders formulierte Thesen
+  nicht als übereinstimmend (dokumentierte Grenze, siehe Docstring).
 - **Cashflow-Modell für Shorts:** Eröffnen eines Short erhöht das
   gebuchte Cash (Verkaufserlös), Cover reduziert es wieder - siehe
   Kommentar in `src/execution.py`. Damit bleibt der NAV beim Öffnen einer

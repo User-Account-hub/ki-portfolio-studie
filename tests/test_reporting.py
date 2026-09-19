@@ -14,7 +14,7 @@ from src.boundary_conditions import BoundaryConditionCheck
 from src.correlation import CorrelationWarning
 from src.data_quality import DataQualityReport
 from src.event_calendar import EarningsWarning, MacroEvent
-from src.deep_reflection_schema import DeepReflectionOutput
+from src.deep_reflection_schema import DeepReflectionOutput, DeepReflectionRunResult, SelfConsistencyCheckResult
 from src.execution import ExecutedOrderResult
 from src.metrics import MetricsResult
 from src.order_schema import ProposedOrder
@@ -73,11 +73,56 @@ def test_report_includes_reflection_section_when_present():
         portfolio_stance_assessment="kohärent",
         reflection_commentary="Alles im Rahmen der Methodik.",
     )
-    content = _generate(deep_reflection=reflection)
+    run_result = DeepReflectionRunResult(
+        primary=reflection, secondary=reflection, consistency=SelfConsistencyCheckResult(consistent=True)
+    )
+    content = _generate(deep_reflection=run_result)
     assert "## Monatliche Tiefenreflexion (Kap. 6.12.3)" in content
     assert "NVDA-These bestätigt" in content
     assert "CCJ-These überfällig" in content
     assert "Alles im Rahmen der Methodik." in content
+
+
+# --- Selbstkonsistenz-Prüfung (2026-09-19) -----------------------------------
+
+
+def test_report_shows_consistent_when_both_calls_agree():
+    reflection = DeepReflectionOutput(reflection_commentary="Alles im Rahmen der Methodik.")
+    run_result = DeepReflectionRunResult(
+        primary=reflection, secondary=reflection, consistency=SelfConsistencyCheckResult(consistent=True)
+    )
+    content = _generate(deep_reflection=run_result)
+    assert "Selbstkonsistenz-Prüfung" in content
+    assert "Beide Aufrufe stimmen in den Kernaussagen überein." in content
+    assert "Zweite Antwort" not in content  # nur bei Abweichung vollständig ausgegeben
+
+
+def test_report_documents_both_responses_on_mismatch():
+    """Kernanforderung: keine automatische Konfliktlösung - bei Abweichung
+    müssen BEIDE Antworten vollständig im Report erscheinen."""
+    primary = DeepReflectionOutput(
+        theses_confirmed=["NVDA-These bestätigt"],
+        reflection_commentary="Erster Aufruf: These bestätigt.",
+    )
+    secondary = DeepReflectionOutput(
+        theses_falsified_or_overdue=["NVDA-These widerlegt"],
+        reflection_commentary="Zweiter Aufruf: These widerlegt.",
+    )
+    run_result = DeepReflectionRunResult(
+        primary=primary,
+        secondary=secondary,
+        consistency=SelfConsistencyCheckResult(
+            consistent=False,
+            mismatch_details=["theses_confirmed: nur im 1. Aufruf genannt: ['nvda-these bestätigt']"],
+        ),
+    )
+    content = _generate(deep_reflection=run_result)
+    assert "Abweichung zwischen den beiden Aufrufen" in content
+    assert "nur im 1. Aufruf genannt" in content
+    # Erste Antwort (oben, als "die" Reflexion) UND zweite Antwort (vollständig) müssen beide vorkommen.
+    assert "Erster Aufruf: These bestätigt." in content
+    assert "Zweiter Aufruf: These widerlegt." in content
+    assert "NVDA-These widerlegt" in content
 
 
 # --- Randbedingungen (Kap. 7) -----------------------------------------------

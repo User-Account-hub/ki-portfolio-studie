@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from src.boundary_conditions import BoundaryConditionCheck
 from src.data_quality import DataQualityReport
-from src.deep_reflection_schema import DeepReflectionOutput
+from src.deep_reflection_schema import DeepReflectionRunResult
 from src.event_calendar import EarningsWarning, MacroEvent
 from src.execution import ExecutedOrderResult
 from src.metrics import MetricsResult
@@ -30,7 +30,7 @@ def generate_report(
     portfolio_commentary: str,
     metrics: MetricsResult,
     data_quality_report: DataQualityReport,
-    deep_reflection: DeepReflectionOutput | None,
+    deep_reflection: DeepReflectionRunResult | None,
     triggered_boundary_conditions: list[BoundaryConditionCheck],
     still_open_boundary_conditions: list[BoundaryConditionCheck],
     correlation_cluster_count: int | None,
@@ -135,18 +135,50 @@ def generate_report(
     lines.append("")
 
     if deep_reflection is not None:
+        primary = deep_reflection.primary
         lines.append("## Monatliche Tiefenreflexion (Kap. 6.12.3)")
-        if deep_reflection.theses_confirmed:
+        if primary.theses_confirmed:
             lines.append("**Bestätigte Thesen:**")
-            for thesis in deep_reflection.theses_confirmed:
+            for thesis in primary.theses_confirmed:
                 lines.append(f"- {thesis}")
-        if deep_reflection.theses_falsified_or_overdue:
+        if primary.theses_falsified_or_overdue:
             lines.append("**Widerlegte/überfällige Thesen:**")
-            for thesis in deep_reflection.theses_falsified_or_overdue:
+            for thesis in primary.theses_falsified_or_overdue:
                 lines.append(f"- {thesis}")
-        lines.append(f"**Pattern-Matching-Bedenken:** {deep_reflection.pattern_matching_concerns or '-'}")
-        lines.append(f"**Portfolio-Haltung:** {deep_reflection.portfolio_stance_assessment or '-'}")
-        lines.append(f"**Zusammenfassung:** {deep_reflection.reflection_commentary}")
+        lines.append(f"**Pattern-Matching-Bedenken:** {primary.pattern_matching_concerns or '-'}")
+        lines.append(f"**Portfolio-Haltung:** {primary.portfolio_stance_assessment or '-'}")
+        lines.append(f"**Zusammenfassung:** {primary.reflection_commentary}")
+        lines.append("")
+
+        lines.append("### Selbstkonsistenz-Prüfung (zwei unabhängige Aufrufe desselben Prompts)")
+        lines.append(
+            "Ausschliesslich für die monatliche Tiefenreflexion (aus Kostengründen nicht im "
+            "täglichen Ablauf): Claude wird für dieselbe Periode zweimal mit identischem Prompt "
+            "aufgerufen und die Kernaussagen (bestätigte/widerlegte Thesen) verglichen. Bei einer "
+            "Abweichung erfolgt KEINE automatische Konfliktlösung - beide Antworten werden unten "
+            "dokumentiert; die Reflexion oben (1. Aufruf) dient unverändert als Grundlage für den "
+            "nächsten Lauf."
+        )
+        if deep_reflection.consistency.consistent:
+            lines.append("✅ Beide Aufrufe stimmen in den Kernaussagen überein.")
+        else:
+            lines.append("⚠️ **Abweichung zwischen den beiden Aufrufen:**")
+            for detail in deep_reflection.consistency.mismatch_details:
+                lines.append(f"- {detail}")
+            secondary = deep_reflection.secondary
+            lines.append("")
+            lines.append("**Zweite Antwort (vollständig, zum Vergleich):**")
+            if secondary.theses_confirmed:
+                lines.append("- Bestätigte Thesen (2. Aufruf):")
+                for thesis in secondary.theses_confirmed:
+                    lines.append(f"  - {thesis}")
+            if secondary.theses_falsified_or_overdue:
+                lines.append("- Widerlegte/überfällige Thesen (2. Aufruf):")
+                for thesis in secondary.theses_falsified_or_overdue:
+                    lines.append(f"  - {thesis}")
+            lines.append(f"- Pattern-Matching-Bedenken (2. Aufruf): {secondary.pattern_matching_concerns or '-'}")
+            lines.append(f"- Portfolio-Haltung (2. Aufruf): {secondary.portfolio_stance_assessment or '-'}")
+            lines.append(f"- Zusammenfassung (2. Aufruf): {secondary.reflection_commentary}")
         lines.append("")
 
     if forced_actions:

@@ -227,6 +227,7 @@ def _maybe_run_deep_reflection(
     portfolio_row,
     nav_history,
     metrics_result,
+    today: pd.Timestamp | None = None,
 ):
     """Kap. 6.12.3: monatliche Tiefenreflexion zusätzlich zum täglichen
     Ablauf, ab Woche 5 der offiziellen Studie (rollierende 4-Wochen-Perioden
@@ -236,15 +237,31 @@ def _maybe_run_deep_reflection(
     ab dem nächsten Lauf über db.get_latest_reflection/build_user_prompt in
     die tägliche Entscheidung ein.
 
+    `today` ist ein Test-Seam (Default None -> echtes Tagesdatum) - erlaubt
+    Tests, einen konkreten, in einer fälligen Periode liegenden Tag zu
+    injizieren, ohne die Systemzeit zu mocken.
+
+    Selbstkonsistenz-Prüfung (2026-09-19, siehe deep_reflection_schema.
+    check_self_consistency): AUSSCHLIESSLICH hier, NICHT im täglichen
+    Handelsablauf - Kostengründe (die Tiefenreflexion läuft nur alle 4
+    Wochen, ein zusätzlicher Claude-Aufruf fällt dort kaum ins Gewicht;
+    im täglichen Ablauf, der bei jedem Lauf ausgeführt wird, würde er die
+    API-Kosten verdoppeln). Claude wird für dieselbe Periode zweimal mit
+    IDENTISCHEM Prompt aufgerufen; weichen die Kernaussagen (bestätigte/
+    widerlegte Thesen) ab, gibt es KEINE automatische Konfliktlösung - beide
+    Antworten werden persistiert/dokumentiert (siehe unten und reporting.py),
+    die erste dient unverändert als Grundlage für den nächsten Lauf.
+
     Weder ein Ausbleiben (noch nicht fällig) noch ein Fehler dieses Aufrufs
-    selbst (Claude-API-Fehler, kein valides JSON) darf den für diesen Lauf
-    bereits abgeschlossenen Handelsteil oder den Report gefährden - bei
-    einem Fehler wird NICHTS in der DB vermerkt, sodass derselbe fällige
-    Zeitraum beim nächsten Lauf automatisch erneut versucht wird (siehe
+    selbst (Claude-API-Fehler, kein valides JSON bei EINEM der beiden
+    Aufrufe) darf den für diesen Lauf bereits abgeschlossenen Handelsteil
+    oder den Report gefährden - bei einem Fehler wird NICHTS in der DB
+    vermerkt, sodass derselbe fällige Zeitraum beim nächsten Lauf
+    automatisch erneut versucht wird (siehe
     deep_reflection_prompt.due_reflection_period's Docstring).
     """
     reflection_count = db.count_deep_reflections(conn, portfolio_row["id"])
-    today = pd.Timestamp(datetime.date.today())
+    today = today if today is not None else pd.Timestamp(datetime.date.today())
     due_period = deep_reflection_prompt.due_reflection_period(reflection_count, today)
     if due_period is None:
         return None
@@ -278,13 +295,30 @@ def _maybe_run_deep_reflection(
             period_benchmark_return_pct=nav_history.benchmark_normalized[-1] / benchmark_at_start - 1,
             period_baseline_return_pct=nav_history.baseline_normalized[-1] / baseline_at_start - 1,
         )
+        # Selbstkonsistenz-Pruefung (siehe Docstring oben): zwei unabhaengige
+        # Aufrufe mit IDENTISCHEM System-/User-Prompt fuer dieselbe Periode.
         raw_response = get_trading_decision(
             deep_reflection_prompt.DEEP_REFLECTION_SYSTEM_PROMPT,
             user_prompt,
             api_key=app_config.anthropic_api_key,
             model=app_config.claude_model,
         )
+        raw_response_2 = get_trading_decision(
+            deep_reflection_prompt.DEEP_REFLECTION_SYSTEM_PROMPT,
+            user_prompt,
+            api_key=app_config.anthropic_api_key,
+            model=app_config.claude_model,
+        )
         reflection = deep_reflection_schema.parse_reflection_from_json(raw_response)
+        reflection_2 = deep_reflection_schema.parse_reflection_from_json(raw_response_2)
+        consistency = deep_reflection_schema.check_self_consistency(reflection, reflection_2)
+        if not consistency.consistent:
+            log.warning(
+                "Tiefenreflexion: Selbstkonsistenz-Prüfung zeigt Abweichung zwischen den beiden "
+                "Aufrufen (%s) - keine automatische Konfliktlösung, beide Antworten werden "
+                "dokumentiert.",
+                "; ".join(consistency.mismatch_details),
+            )
     except Exception:
         log.exception(
             "Monatliche Tiefenreflexion fehlgeschlagen - Report wird trotzdem erstellt, derselbe "
@@ -299,14 +333,27 @@ def _maybe_run_deep_reflection(
         prompt=user_prompt,
         raw_response=raw_response,
         proposed_orders=None,
-        risk_check_result=None,
+        # Zweite Antwort + Konsistenz-Ergebnis landen hier (statt in eigenen
+        # Spalten) - risk_check_result ist bereits das generische JSON-Feld
+        # fuer Neben-Ergebnisse ausserhalb des eigentlichen Guardrail-Pfads
+        # (siehe z.B. die {"info": ...}/{"error": ...}-Verwendung anderswo in
+        # dieser Datei); keine Schema-Migration fuer diesen Zusatzbefund noetig.
+        risk_check_result=[{
+            "self_consistency_check": {
+                "consistent": consistency.consistent,
+                "mismatch_details": consistency.mismatch_details,
+                "second_raw_response": raw_response_2,
+            }
+        }],
         rationale=reflection.reflection_commentary,
         forced_action=False,
         approved=True,
         executed=False,
     )
     log.info("Tiefenreflexion abgeschlossen und gespeichert.")
-    return reflection
+    return deep_reflection_schema.DeepReflectionRunResult(
+        primary=reflection, secondary=reflection_2, consistency=consistency
+    )
 
 
 def run() -> None:

@@ -1,13 +1,17 @@
 """Tests for src/deep_reflection_schema.py's JSON parsing/validation -
 mirrors tests/test_order_schema.py-style coverage (tolerant JSON extraction,
-schema validation), just without expecting any order fields.
+schema validation), just without expecting any order fields - plus the
+2026-09-19 self-consistency check used exclusively by the monthly deep
+reflection (see pipeline._maybe_run_deep_reflection).
 """
 from __future__ import annotations
 
 import pytest
 
 from src.deep_reflection_schema import (
+    DeepReflectionOutput,
     DeepReflectionParsingError,
+    check_self_consistency,
     parse_reflection_from_json,
 )
 
@@ -70,3 +74,68 @@ def test_parse_reflection_invalid_json_raises():
     scheitern, nicht schon bei der Struktur-Erkennung."""
     with pytest.raises(DeepReflectionParsingError, match="Ungültiges JSON"):
         parse_reflection_from_json('{"reflection_commentary": "kaputt",}')
+
+
+# --- check_self_consistency (2026-09-19) -------------------------------------
+
+
+def make_reflection(**overrides) -> DeepReflectionOutput:
+    defaults = dict(reflection_commentary="Kommentar")
+    defaults.update(overrides)
+    return DeepReflectionOutput(**defaults)
+
+
+def test_self_consistency_identical_reflections_are_consistent():
+    a = make_reflection(
+        theses_confirmed=["NVDA-These bestätigt"],
+        theses_falsified_or_overdue=["CCJ-These überfällig"],
+    )
+    b = make_reflection(
+        theses_confirmed=["NVDA-These bestätigt"],
+        theses_falsified_or_overdue=["CCJ-These überfällig"],
+    )
+    result = check_self_consistency(a, b)
+    assert result.consistent
+    assert result.mismatch_details == []
+
+
+def test_self_consistency_ignores_order_of_theses():
+    a = make_reflection(theses_confirmed=["A-These", "B-These"])
+    b = make_reflection(theses_confirmed=["B-These", "A-These"])
+    assert check_self_consistency(a, b).consistent
+
+
+def test_self_consistency_ignores_case_and_whitespace():
+    a = make_reflection(theses_confirmed=["  NVDA-These bestätigt  "])
+    b = make_reflection(theses_confirmed=["nvda-these bestätigt"])
+    assert check_self_consistency(a, b).consistent
+
+
+def test_self_consistency_detects_mismatch_in_confirmed_theses():
+    a = make_reflection(theses_confirmed=["NVDA-These bestätigt"])
+    b = make_reflection(theses_confirmed=[])
+    result = check_self_consistency(a, b)
+    assert not result.consistent
+    assert any("theses_confirmed" in d and "1. Aufruf" in d for d in result.mismatch_details)
+
+
+def test_self_consistency_detects_mismatch_in_falsified_theses():
+    a = make_reflection(theses_falsified_or_overdue=[])
+    b = make_reflection(theses_falsified_or_overdue=["CCJ-These überfällig"])
+    result = check_self_consistency(a, b)
+    assert not result.consistent
+    assert any("theses_falsified_or_overdue" in d and "2. Aufruf" in d for d in result.mismatch_details)
+
+
+def test_self_consistency_detects_direct_contradiction():
+    """Dieselbe These einmal bestaetigt, einmal widerlegt - der klarste
+    Fall, den dieser Check ueberhaupt abdecken soll."""
+    a = make_reflection(theses_confirmed=["NVDA-These"])
+    b = make_reflection(theses_falsified_or_overdue=["NVDA-These"])
+    result = check_self_consistency(a, b)
+    assert not result.consistent
+    assert len(result.mismatch_details) == 2  # eine Abweichung je betroffenem Feld
+
+
+def test_self_consistency_empty_reflections_are_consistent():
+    assert check_self_consistency(make_reflection(), make_reflection()).consistent
