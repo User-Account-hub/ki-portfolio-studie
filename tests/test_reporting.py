@@ -16,8 +16,9 @@ from src.data_quality import DataQualityReport
 from src.event_calendar import EarningsWarning, MacroEvent
 from src.deep_reflection_schema import DeepReflectionOutput, DeepReflectionRunResult, SelfConsistencyCheckResult
 from src.execution import ExecutedOrderResult
+from src.market_phase import MarketPhase, MarketPhaseContradiction
 from src.metrics import MetricsResult
-from src.order_schema import ProposedOrder
+from src.order_schema import CyclePosition, ProposedOrder
 from src.reporting import generate_report, generate_stress_test_report
 from src.stress_test import PositionWeight, StressPeriodResult
 from src.stress_test_schema import StressTestCommentary
@@ -251,6 +252,42 @@ def test_report_mentions_no_veto_for_correlation():
     Guardrail mit Ablehnungswirkung ist."""
     content = _generate(deep_reflection=None, executed_results=[], correlation_cluster_count=0)
     assert "KEINE automatische Ablehnung" in content
+
+
+# --- Markt-Phasen-Abgleich (2026-09-20) ---------------------------------------
+
+
+def test_report_shows_no_market_phase_contradictions_when_none():
+    content = _generate(deep_reflection=None, executed_results=[])
+    assert "## Markt-Phasen-Abgleich" in content
+    assert "_Keine Widersprüche in diesem Lauf._" in content
+
+
+def test_report_shows_market_phase_contradiction_from_executed_results():
+    contradiction = MarketPhaseContradiction(
+        symbol="NVDA",
+        claude_cycle_position=CyclePosition.MANIA,
+        rule_based_phase=MarketPhase.BEAR,
+        detail="NVDA: Claude ordnet die Zyklus-Position als 'mania' ein, die regelbasierte "
+        "Marktphasen-Klassifikation (SMA20/50 + Volatilität) sieht das Symbol aber in 'bear'.",
+    )
+    result = ExecutedOrderResult(
+        order=_make_buy_order("NVDA"), approved=True, reasons=[], fill_price=100.0,
+        market_phase_contradiction=contradiction,
+    )
+    content = _generate(deep_reflection=None, executed_results=[result])
+    assert "mania" in content
+    assert "bear" in content
+    assert "_Keine Widersprüche in diesem Lauf._" not in content
+
+
+def test_report_mentions_no_veto_for_market_phase_check():
+    """Kernaussage: der Report muss im Markt-Phasen-Abschnitt selbst
+    klarstellen, dass ein Widerspruch keine automatische Ablehnung ausloest
+    (nicht nur an anderer Stelle im Dokument, z.B. beim Korrelations-Check)."""
+    content = _generate(deep_reflection=None, executed_results=[])
+    section = content.split("## Markt-Phasen-Abgleich")[1].split("## Event-Kalender-Hinweis")[0]
+    assert "KEINE automatische Ablehnung" in section
 
 
 # --- Event-Kalender-Hinweis --------------------------------------------------

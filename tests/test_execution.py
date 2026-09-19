@@ -17,6 +17,7 @@ import pytest
 
 from src import db, execution
 from src.config import RiskConfig
+from src.market_phase import MarketPhase, MarketPhaseClassification
 from src.order_schema import ProposedOrder
 from src.position_sizing import VolatilityScaling
 from src.risk_guardrails import ForcedStopLossAction
@@ -459,6 +460,140 @@ def test_execute_proposed_orders_no_scaling_data_leaves_order_unchanged():
     assert results[0].approved
     assert results[0].volatility_scaling is None
     assert results[0].order.notional == pytest.approx(4_000.0)
+
+
+# --- execute_proposed_orders: Markt-Phasen-Abgleich (2026-09-20) -------------
+
+
+def make_market_phase(symbol: str, phase: MarketPhase) -> MarketPhaseClassification:
+    return MarketPhaseClassification(
+        symbol=symbol, phase=phase, price=100.0, sma20=100.0, sma50=100.0, volatility_20d_annualized=0.2
+    )
+
+
+def test_execute_proposed_orders_documents_market_phase_contradiction():
+    """Kein Veto: eine widersprechende Zyklus-Position/Marktphase-Kombination
+    (hier: 'mania' bei tatsaechlich regelbasiert erkanntem Bear-Markt) darf
+    die Order weder blockieren noch veraendern - nur dokumentieren."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test", cycle_position="mania",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        market_phases={"MINI-NVDA-LONG-1": make_market_phase("MINI-NVDA-LONG-1", MarketPhase.BEAR)},
+    )
+
+    assert results[0].approved  # kein Veto
+    contradiction = results[0].market_phase_contradiction
+    assert contradiction is not None
+    assert contradiction.claude_cycle_position.value == "mania"
+    assert contradiction.rule_based_phase == MarketPhase.BEAR
+
+
+def test_execute_proposed_orders_no_contradiction_when_phases_align():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test", cycle_position="mania",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        market_phases={"MINI-NVDA-LONG-1": make_market_phase("MINI-NVDA-LONG-1", MarketPhase.BULL)},
+    )
+
+    assert results[0].approved
+    assert results[0].market_phase_contradiction is None
+
+
+def test_execute_proposed_orders_no_market_phase_check_without_cycle_position():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",  # kein cycle_position
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        market_phases={"MINI-NVDA-LONG-1": make_market_phase("MINI-NVDA-LONG-1", MarketPhase.BEAR)},
+    )
+
+    assert results[0].market_phase_contradiction is None
+
+
+def test_execute_proposed_orders_no_market_phase_check_without_phase_data():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test", cycle_position="crash",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        market_phases=None,  # keine Klassifikation verfuegbar
+    )
+
+    assert results[0].market_phase_contradiction is None
+
+
+def test_execute_proposed_orders_documents_contradiction_even_when_order_rejected():
+    """Auch eine von den Guardrails abgelehnte Order dokumentiert einen
+    gefundenen Markt-Phasen-Widerspruch - die beiden Mechanismen sind
+    unabhaengig voneinander."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    # Sehr niedriges Limit, damit die Order sicher abgelehnt wird.
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.001)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test", cycle_position="crash",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        market_phases={"MINI-NVDA-LONG-1": make_market_phase("MINI-NVDA-LONG-1", MarketPhase.BULL)},
+    )
+
+    assert not results[0].approved
+    contradiction = results[0].market_phase_contradiction
+    assert contradiction is not None
+    assert contradiction.claude_cycle_position.value == "crash"
 
 
 # --- execute_forced_stop_loss_actions ----------------------------------------

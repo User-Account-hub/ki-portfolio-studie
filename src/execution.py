@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from src import broker_alpaca, correlation, db, position_sizing
+from src import broker_alpaca, correlation, db, market_phase, position_sizing
 from src.config import RiskConfig
 from src.order_schema import STRUCTURED_INSTRUMENT_TYPES, TRADABLE_INSTRUMENT_TYPES, OrderSide, ProposedOrder
 from src.risk_guardrails import (
@@ -76,6 +76,11 @@ class ExecutedOrderResult:
     # nicht anwendbar (sell/cover); 1.0, falls anwendbar aber Claude keine
     # Konviktion angegeben hat oder "medium" gewaehlt wurde.
     conviction_scaling_factor: float | None = None
+    # Markt-Phasen-Abgleich (rein dokumentarisch, kein Veto - siehe
+    # src/market_phase.py) - None, wenn kein Widerspruch gefunden wurde
+    # (oder kein Vergleich moeglich war: Claude ohne cycle_position-Angabe,
+    # oder keine Regel-Klassifikation fuers Symbol verfuegbar).
+    market_phase_contradiction: market_phase.MarketPhaseContradiction | None = None
 
 
 def resolve_price(symbol: str, underlying_symbol: str | None, current_prices: dict[str, float]) -> float:
@@ -323,6 +328,7 @@ def execute_proposed_orders(
     peak_nav: float | None = None,
     correlation_matrix: pd.DataFrame | None = None,
     volatility_scaling: dict[str, position_sizing.VolatilityScaling] | None = None,
+    market_phases: dict[str, market_phase.MarketPhaseClassification] | None = None,
 ) -> list[ExecutedOrderResult]:
     results: list[ExecutedOrderResult] = []
     risk_check_log = []
@@ -381,11 +387,28 @@ def execute_proposed_orders(
         )
         risk_check_log.append({"symbol": order.symbol, "approved": check.approved, "reasons": check.reasons})
 
+        # Markt-Phasen-Abgleich (rein dokumentarisch, kein Guardrail - siehe
+        # src/market_phase.py): Claudes optionale cycle_position-Angabe gegen
+        # die regelbasierte SMA/Vola-Klassifikation. Unabhaengig von
+        # `check.approved` berechnet (auch eine abgelehnte Order dokumentiert
+        # ihren Widerspruch), analog zu Vol-Skalierung/Konviktion oben.
+        phase_classification = (market_phases or {}).get(order.symbol)
+        contradiction = None
+        if phase_classification is not None:
+            contradiction = market_phase.check_cycle_position_against_market_phase(
+                order.symbol, order.cycle_position, phase_classification.phase
+            )
+            if contradiction is not None:
+                log.warning(
+                    "Markt-Phasen-Widerspruch: %s - kein Veto, nur dokumentiert.", contradiction.detail
+                )
+
         if not check.approved:
             results.append(
                 ExecutedOrderResult(
                     order=order, approved=False, reasons=check.reasons,
                     volatility_scaling=scaling, conviction_scaling_factor=conviction_factor,
+                    market_phase_contradiction=contradiction,
                 )
             )
             continue
@@ -432,7 +455,9 @@ def execute_proposed_orders(
                 f"Broker meldet gefüllte Menge {fill.filled_qty} (Status: {fill.status}) für "
                 f"{order.symbol} - Order wird übersprungen, kein Trade gebucht."
             )
-            results.append(ExecutedOrderResult(order=order, approved=False, reasons=[reason]))
+            results.append(
+                ExecutedOrderResult(order=order, approved=False, reasons=[reason], market_phase_contradiction=contradiction)
+            )
             risk_check_log.append({"symbol": order.symbol, "approved": False, "reasons": [reason]})
             continue
 
@@ -444,6 +469,7 @@ def execute_proposed_orders(
                 correlation_warnings=correlation_warnings,
                 volatility_scaling=scaling,
                 conviction_scaling_factor=conviction_factor,
+                market_phase_contradiction=contradiction,
             )
         )
 

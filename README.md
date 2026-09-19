@@ -125,6 +125,25 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   Cash hinaus" interpretiert (`risk_guardrails.check_no_margin`). Das für
   Shorting technisch nötige Alpaca-Margin-Konto ist davon ausgenommen, da
   Shorting explizit erlaubt ist.
+- **Markt-Phasen-Abgleich (2026-09-20, `src/market_phase.py`,
+  `order_schema.CyclePosition`):** Eine automatische, regelbasierte
+  Bull/Bear/Seitwärts-Klassifikation je Titel aus SMA20/SMA50 und der
+  rollierenden 20-Tage-Volatilität (`classify_market_phase` - Seitwärts
+  innerhalb einer volatilitätsskalierten Bandbreite um SMA50, sonst Bull/Bear
+  je nachdem, ob Kurs UND SMA20 gemeinsam über/unter SMA50 liegen; ein
+  gemischtes Signal gilt konservativ als Seitwärts). Claude kann optional je
+  Order strukturiert dieselbe Zyklus-Position angeben, die SYSTEM_PROMPT-
+  Anforderung 1 ohnehin verbal verlangt (Feld `cycle_position`:
+  Akkumulation/Aufmerksamkeit/Manie/Crash/Rückkehr zum Mittel, Kap. 3) -
+  `check_cycle_position_against_market_phase` vergleicht beide anhand einer
+  dokumentierten, bewusst groben Heuristik (z.B. "Manie" ist nur bei
+  regelbasiertem Bull plausibel). Ausschliesslich aus bereits vorhandenen
+  Kursdaten (denselben `sma20`/`sma50`/`volatility_20d_annualized`-Werten
+  wie Prompt/Report), kein zusätzlicher Datenabruf. Ein Widerspruch wird pro
+  Trade im Report dokumentiert, löst aber **kein Veto** aus - weder die
+  Guardrail-Prüfung noch die Order-Ausführung werden davon beeinflusst; ein
+  einfaches 3-Phasen-Regelwerk ist kein Beweis, dass Claudes 5-Phasen-
+  Einschätzung falsch liegt.
 - **Selbstkonsistenz-Prüfung der monatlichen Tiefenreflexion (2026-09-19,
   Kap. 6.12.3, `deep_reflection_schema.check_self_consistency`,
   `pipeline._maybe_run_deep_reflection`):** Claude wird für dieselbe

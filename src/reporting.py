@@ -116,6 +116,24 @@ def generate_report(
     lines.append(f"**Korrelations-Cluster im aktuellen Portfolio:** {cluster_display}")
     lines.append("")
 
+    lines.append("## Markt-Phasen-Abgleich (Beobachtungsgrösse, kein Guardrail)")
+    lines.append(
+        "Regelbasierte Bull/Bear/Seitwärts-Klassifikation je Symbol (SMA20/50 + rollierende "
+        "20-Tage-Volatilität, siehe src/market_phase.py) gegen Claudes optionale, je Order "
+        "angegebene Zyklus-Position (Kap. 3, SYSTEM_PROMPT-Anforderung 1) verglichen. Ein "
+        "Widerspruch wird hier dokumentiert, löst aber KEINE automatische Ablehnung aus - die "
+        "Regel-Klassifikation ist ihrerseits nur ein einfaches technisches Signal, kein Beweis, "
+        "dass Claudes Einschätzung falsch liegt."
+    )
+    phase_contradictions = [r.market_phase_contradiction for r in executed_results if r.market_phase_contradiction]
+    if phase_contradictions:
+        lines.append("**Widersprüche in diesem Lauf:**")
+        for c in phase_contradictions:
+            lines.append(f"- {c.detail}")
+    else:
+        lines.append("_Keine Widersprüche in diesem Lauf._")
+    lines.append("")
+
     lines.append("## Event-Kalender-Hinweis (informativ, kein Verbot)")
     lines.append(
         "Bevorstehende Quartalsberichte (yfinance) und hardcodierte FOMC-/CPI-Termine "

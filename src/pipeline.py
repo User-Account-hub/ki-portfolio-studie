@@ -37,6 +37,7 @@ from src import (
     event_calendar,
     execution,
     fundamentals,
+    market_phase,
     metrics,
     position_sizing,
     reporting,
@@ -110,6 +111,19 @@ def _compute_volatility_scaling(
         min_factor=risk_config.volatility_scaling_min_factor,
         max_factor=risk_config.volatility_scaling_max_factor,
     )
+
+
+def _compute_market_phases(
+    snapshots: dict[str, data_fetch.MarketSnapshot],
+) -> dict[str, market_phase.MarketPhaseClassification]:
+    """Regelbasierte Bull/Bear/Seitwärts-Klassifikation je Symbol (siehe
+    src/market_phase.py) - wie _compute_volatility_scaling oben rein aus den
+    bereits in `snapshots` vorhandenen Werten (sma20/sma50/Volatilität),
+    kein zusätzlicher Datenabruf. Dient als unabhängiger, mechanischer
+    Gegencheck zu Claudes optionaler cycle_position-Angabe je Order (Kap. 3,
+    SYSTEM_PROMPT-Anforderung 1) - rein dokumentarisch, siehe execution.py/
+    reporting.py, kein Guardrail-Veto."""
+    return market_phase.classify_universe_market_phases(snapshots)
 
 
 # Puffer über die eigentlich benötigten 60 Handelstage hinaus, damit
@@ -396,6 +410,9 @@ def run() -> None:
         log.info("Berechne volatilitätsadjustierte Positionsgrössen-Skalierung (rollierende 20-Tage-Vol)...")
         volatility_scaling = _compute_volatility_scaling(snapshots, risk_config)
 
+        log.info("Berechne regelbasierte Markt-Phasen-Klassifikation (Bull/Bear/Seitwärts) je Symbol...")
+        market_phases = _compute_market_phases(snapshots)
+
         log.info("Führe Datenqualitäts-Checks durch (yfinance vs. Alpaca, Lücken/Ausreisser)...")
         tradable_symbols = [s for s in price_lookup_symbols if s not in structured_product_symbols]
         dq_report = _run_data_quality_checks(
@@ -510,6 +527,7 @@ def run() -> None:
                     peak_nav=peak_nav,
                     correlation_matrix=correlation_matrix,
                     volatility_scaling=volatility_scaling,
+                    market_phases=market_phases,
                 )
             except OrderParsingError as exc:
                 log.error("Konnte Claude-Antwort nicht parsen: %s", exc)

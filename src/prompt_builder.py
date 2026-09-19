@@ -48,7 +48,10 @@ Renditemaximierung. Es gelten sieben Anforderungen:
 ein (Akkumulation / Aufmerksamkeit / Manie / Crash / Rückkehr zum Mittel, Kap. 3). \
 Nenne mindestens einen konkreten Indikator, der diese Einordnung stützt. Bevorzuge \
 Titel in früher bis mittlerer Zyklusphase. Falls du einen Titel in später \
-Manie-Phase empfiehlst, ist eine gesonderte, explizite Begründung zwingend.
+Manie-Phase empfiehlst, ist eine gesonderte, explizite Begründung zwingend. Gib diese \
+Einordnung zusätzlich strukturiert im Feld "cycle_position" an (siehe JSON-Schema) - \
+sie wird serverseitig automatisiert gegen eine regelbasierte SMA/Volatilitäts-\
+Klassifikation verglichen (rein dokumentarisch, kein Ausschlusskriterium).
 
 2. MOAT-QUALITÄT UND POSITIONSGRÖSSE
    Nutze die Moat-Klassifikation (Wide/Narrow/No Moat, Kap. 13) als Grundlage für \
@@ -133,6 +136,7 @@ JSON-Ausgabeschema:
         }
       ],
       "conviction": "high|medium|low", // optional, siehe oben - nur leichter Effekt
+      "cycle_position": "accumulation|attention|mania|crash|reversion_to_mean", // optional, siehe Anforderung 1
       "rationale": "string - kurze Begründung"
     }
   ],

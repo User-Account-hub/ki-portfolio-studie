@@ -41,6 +41,21 @@ class ConvictionLevel(str, Enum):
     LOW = "low"
 
 
+class CyclePosition(str, Enum):
+    """Strukturierte Fassung von SYSTEM_PROMPT-Anforderung 1 (Zyklus-Position,
+    Kap. 3, prompt_builder.py) - macht Claudes je Order ohnehin verbal
+    verlangte Zyklus-Einordnung maschinell auswertbar (2026-09-20), damit sie
+    gegen die regelbasierte Marktphasen-Klassifikation (src/market_phase.py)
+    verglichen werden kann. Optional/best-effort wie ConvictionLevel/
+    BoundaryCondition - keine Order wird abgelehnt, nur weil es fehlt; die
+    Textbegründung in `rationale` bleibt die eigentliche Anforderung 1."""
+    ACCUMULATION = "accumulation"
+    ATTENTION = "attention"
+    MANIA = "mania"
+    CRASH = "crash"
+    REVERSION_TO_MEAN = "reversion_to_mean"
+
+
 class BoundaryConditionCheckType(str, Enum):
     """Kap. 7: nur PRICE_ABOVE/PRICE_BELOW sind mechanisch prüfbar (siehe
     boundary_conditions.py) - QUALITATIVE (z.B. Makro-/Earnings-Ereignisse)
@@ -86,6 +101,9 @@ class ProposedOrder(BaseModel):
     # Optional, kein Pflichtfeld (siehe ConvictionLevel-Docstring) - fehlt es,
     # wird die Positionsgroesse nicht konviktions-skaliert (Faktor 1.0).
     conviction: Optional[ConvictionLevel] = None
+    # Optional, kein Pflichtfeld (siehe CyclePosition-Docstring) - fehlt es,
+    # wird kein Marktphasen-Abgleich fuer diese Order durchgefuehrt.
+    cycle_position: Optional[CyclePosition] = None
     rationale: str
 
     @model_validator(mode="after")

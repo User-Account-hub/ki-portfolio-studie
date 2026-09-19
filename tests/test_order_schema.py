@@ -1,14 +1,15 @@
 """Tests for src/order_schema.py's Kap.-7 BoundaryCondition addition to
 ProposedOrder - optional/best-effort (no order is rejected for omitting it),
 but internally consistent when provided (a price-based check_type needs a
-threshold_price) - and for the 2026-09-19 optional ConvictionLevel field.
+threshold_price) - and for the 2026-09-19 optional ConvictionLevel and
+2026-09-20 optional CyclePosition fields.
 """
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from src.order_schema import BoundaryCondition, ConvictionLevel, ProposedOrder
+from src.order_schema import BoundaryCondition, ConvictionLevel, CyclePosition, ProposedOrder
 
 
 def make_order(**overrides) -> ProposedOrder:
@@ -82,3 +83,27 @@ def test_conviction_accepts_valid_levels(level):
 def test_conviction_rejects_invalid_level():
     with pytest.raises(ValidationError):
         make_order(conviction="very_high")
+
+
+# --- cycle_position (2026-09-20) ----------------------------------------------
+
+
+def test_cycle_position_defaults_to_none():
+    """Optional/best-effort (analog zu conviction/boundary_conditions): eine
+    Order ohne Zyklus-Position-Angabe muss weiterhin gueltig sein und darf
+    keine Phase unterstellen - fehlende Angabe bedeutet 'kein Marktphasen-
+    Abgleich fuer diese Order' (siehe market_phase.py), nicht eine bestimmte
+    Phase per Default."""
+    order = make_order()
+    assert order.cycle_position is None
+
+
+@pytest.mark.parametrize("phase", ["accumulation", "attention", "mania", "crash", "reversion_to_mean"])
+def test_cycle_position_accepts_valid_phases(phase):
+    order = make_order(cycle_position=phase)
+    assert order.cycle_position == CyclePosition(phase)
+
+
+def test_cycle_position_rejects_invalid_phase():
+    with pytest.raises(ValidationError):
+        make_order(cycle_position="bull_market")
