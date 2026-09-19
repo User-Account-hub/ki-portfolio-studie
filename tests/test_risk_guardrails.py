@@ -765,6 +765,26 @@ def test_evaluate_order_full_stop_tier_blocks_new_regular_equity_position():
     assert not result.approved
 
 
+def test_evaluate_order_tier1_drawdown_does_not_reduce_leveraged_position_size():
+    """Direkter Beweis, NICHT nur ueber die Anzahl der Ablehnungsgruende:
+    bei -12% Drawdown (Tier 1) wuerde dieselbe Order-Groesse fuer eine
+    REGULAERE Aktie abgelehnt (siehe
+    test_evaluate_order_tier1_drawdown_reduces_regular_equity_position_size,
+    identische Zahlen: Limit 8_800 ohne Reduktion, 6_600 mit 75%-Reduktion,
+    Order-Notional 8_000 liegt dazwischen). Fuer eine gehebelte ETF (NVDL)
+    IDENTISCHER Groesse bei DEMSELBEN Drawdown muss die Order dagegen
+    GENEHMIGT werden - die Tier-1-Reduktion greift nicht, nur der
+    bestehende, unveraenderte -25%-Circuit-Breaker bleibt fuer sie
+    massgeblich (der bei -12% noch nicht ausgeloest ist)."""
+    config = make_config(max_trade_notional_pct_of_nav=0.10, max_position_size_pct_of_portfolio=0.10)
+    order = make_order(symbol="NVDL", instrument_type="etf", side="buy", quantity=None, notional=8_000.0)
+    ctx = make_ctx(nav=88_000.0, start_of_run_nav=88_000.0, peak_nav=100_000.0)  # -12% Drawdown
+    result = evaluate_order(
+        order, ctx, price=15.0, current_prices={"NVDL": 15.0}, config=config, order_leveraged=True
+    )
+    assert result.approved
+
+
 def test_evaluate_order_drawdown_tiers_do_not_apply_to_leveraged_orders():
     """Kernanforderung: 'unveraendertes Verhalten fuer Hebelpositionen'.
     Waere der abgestufte Positionsgroessen-Schutz auch fuer Hebelpositionen
