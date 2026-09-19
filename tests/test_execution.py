@@ -18,6 +18,7 @@ import pytest
 from src import db, execution
 from src.config import RiskConfig
 from src.order_schema import ProposedOrder
+from src.position_sizing import VolatilityScaling
 from src.risk_guardrails import ForcedStopLossAction
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
@@ -59,6 +60,8 @@ def make_risk_config(**overrides) -> RiskConfig:
         min_cash_pct_of_nav=0.05,
         circuit_breaker_drawdown_pct=-0.25,
         transaction_cost_pct_of_notional=0.001,
+        volatility_scaling_min_factor=0.5,
+        volatility_scaling_max_factor=1.5,
     )
     defaults.update(overrides)
     return RiskConfig(**defaults)
@@ -163,6 +166,136 @@ def test_execute_proposed_orders_deducts_transaction_cost_on_sell():
     # Erloes wird durch die Kosten GESCHMÄLERT, nicht erhoeht - Cash darf nicht
     # ueber (Ausgangs-Cash + voller Notional) hinausgehen.
     assert updated["cash_balance"] == pytest.approx(100_000.0 + notional - expected_cost)
+
+
+# --- execute_proposed_orders: volatilitätsadjustierte Positionsgrössen-Skalierung ---
+
+
+def test_execute_proposed_orders_scales_notional_before_guardrail_check():
+    """Faktor 1.5 muss VOR der Guardrail-Pruefung greifen: das tatsaechlich
+    gebuchte Notional ist das skalierte, nicht das von Claude vorgeschlagene."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    # max_trade_notional_pct_of_nav angehoben (0.10 statt Default 0.05), damit
+    # dieser Test ausschliesslich die Skalierung selbst prueft - das
+    # Zusammenspiel mit einem durch die Skalierung ueberschrittenen Limit
+    # deckt der eigene Test unten ab.
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0, max_trade_notional_pct_of_nav=0.10)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",
+    )
+    scaling = VolatilityScaling(
+        symbol="MINI-NVDA-LONG-1", annualized_volatility=0.10, universe_avg_volatility=0.15, scaling_factor=1.5,
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        volatility_scaling={"MINI-NVDA-LONG-1": scaling},
+    )
+
+    assert results[0].approved
+    assert results[0].volatility_scaling == scaling
+    assert results[0].order.notional == pytest.approx(6_000.0)  # 4000 * 1.5
+
+    trade = conn.execute("SELECT * FROM trades WHERE portfolio_id = ?", (portfolio["id"],)).fetchone()
+    assert trade["notional"] == pytest.approx(6_000.0)
+    updated = db.get_portfolio(conn, "test")
+    assert updated["cash_balance"] == pytest.approx(100_000.0 - 6_000.0)
+
+
+def test_execute_proposed_orders_scaling_cannot_bypass_trade_notional_limit():
+    """Die Skalierung ist eine Verfeinerung INNERHALB der Kap.-6.8-Limiten,
+    kein Aushebeln: eine durch die Skalierung ueber das Limit gehobene Order
+    muss weiterhin abgelehnt werden, obwohl die urspruengliche (unskalierte)
+    Groesse innerhalb des Limits gelegen haette."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    # Limit = 5% von 100'000 = 5'000 - das unskalierte Notional (4'000) liegt
+    # darunter, das skalierte (4'000 * 1.5 = 6'000) darueber.
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.05)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",
+    )
+    scaling = VolatilityScaling(
+        symbol="MINI-NVDA-LONG-1", annualized_volatility=0.10, universe_avg_volatility=0.15, scaling_factor=1.5,
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        volatility_scaling={"MINI-NVDA-LONG-1": scaling},
+    )
+
+    assert not results[0].approved
+    assert results[0].volatility_scaling == scaling
+    assert any("Trade-Notional" in r for r in results[0].reasons)
+
+
+def test_execute_proposed_orders_sell_orders_are_not_scaled():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol="MINI-NVDA-LONG-1",
+        instrument_type="mini_future", underlying_symbol="NVDA", side="long",
+        delta_quantity=40.0, fill_price=100.0,
+    )
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="sell", quantity=40.0, rationale="test",
+    )
+    scaling = VolatilityScaling(
+        symbol="MINI-NVDA-LONG-1", annualized_volatility=0.10, universe_avg_volatility=0.15, scaling_factor=1.5,
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        volatility_scaling={"MINI-NVDA-LONG-1": scaling},
+    )
+
+    assert results[0].approved
+    assert results[0].volatility_scaling is None
+    assert results[0].order.quantity == pytest.approx(40.0)  # unveraendert
+
+
+def test_execute_proposed_orders_no_scaling_data_leaves_order_unchanged():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(transaction_cost_pct_of_notional=0.0)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        volatility_scaling={},  # kein Eintrag fuer dieses Symbol
+    )
+
+    assert results[0].approved
+    assert results[0].volatility_scaling is None
+    assert results[0].order.notional == pytest.approx(4_000.0)
 
 
 # --- execute_forced_stop_loss_actions ----------------------------------------

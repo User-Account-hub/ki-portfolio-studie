@@ -38,6 +38,7 @@ from src import (
     execution,
     fundamentals,
     metrics,
+    position_sizing,
     reporting,
 )
 from src.claude_client import get_trading_decision
@@ -87,6 +88,28 @@ def _run_data_quality_checks(
         log.exception("Kurshistorien-Abruf (Datenqualität) fehlgeschlagen - wird übersprungen.")
 
     return data_quality.build_report(yfinance_prices, alpaca_prices, price_histories)
+
+
+def _compute_volatility_scaling(
+    snapshots: dict[str, data_fetch.MarketSnapshot],
+    risk_config: RiskConfig,
+) -> dict[str, position_sizing.VolatilityScaling]:
+    """Volatilitätsadjustierte Positionsgrössen-Skalierung (siehe
+    src/position_sizing.py) - nutzt die pro Symbol bereits in `snapshots`
+    berechnete annualisierte 20-Tage-Volatilität, kein zusätzlicher
+    Datenabruf nötig. Symbole ohne berechenbare Volatilität (zu kurze
+    Historie) fehlen in `volatilities` und erhalten dadurch konsequent
+    keinen Skalierungsfaktor (siehe compute_scaling_factors' Docstring)."""
+    volatilities = {
+        s: snap.volatility_20d_annualized
+        for s, snap in snapshots.items()
+        if snap.volatility_20d_annualized is not None
+    }
+    return position_sizing.compute_scaling_factors(
+        volatilities,
+        min_factor=risk_config.volatility_scaling_min_factor,
+        max_factor=risk_config.volatility_scaling_max_factor,
+    )
 
 
 # Puffer über die eigentlich benötigten 60 Handelstage hinaus, damit
@@ -323,6 +346,9 @@ def run() -> None:
         )
         current_prices = {s: snap.last_price for s, snap in snapshots.items()}
 
+        log.info("Berechne volatilitätsadjustierte Positionsgrössen-Skalierung (rollierende 20-Tage-Vol)...")
+        volatility_scaling = _compute_volatility_scaling(snapshots, risk_config)
+
         log.info("Führe Datenqualitäts-Checks durch (yfinance vs. Alpaca, Lücken/Ausreisser)...")
         tradable_symbols = [s for s in price_lookup_symbols if s not in structured_product_symbols]
         dq_report = _run_data_quality_checks(
@@ -436,6 +462,7 @@ def run() -> None:
                     symbol_metadata=symbol_metadata,
                     peak_nav=peak_nav,
                     correlation_matrix=correlation_matrix,
+                    volatility_scaling=volatility_scaling,
                 )
             except OrderParsingError as exc:
                 log.error("Konnte Claude-Antwort nicht parsen: %s", exc)

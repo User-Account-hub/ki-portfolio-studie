@@ -21,6 +21,7 @@ src/
   prompt_builder.py  Baut System-/User-Prompt für Claude
   claude_client.py   Ruft die Anthropic Messages API auf
   order_schema.py    Pydantic-Modelle + JSON-Parsing der Claude-Antwort
+  position_sizing.py Volatilitätsadjustierte Positionsgrössen-Skalierung
   risk_guardrails.py Pre-Trade-Risikoprüfung (reines, getestetes Modul)
   broker_alpaca.py   Ausführung via Alpaca Paper Trading API
   execution.py       Orchestriert Risk-Check -> Ausführung -> DB-Update
@@ -40,8 +41,11 @@ reports/             Generierte Markdown-Reports (werden versioniert)
    unabhängig vom Tagesverlust-Stop (siehe unten).
 3. Prompt bauen, Claude aufrufen, JSON-Antwort parsen & validieren
    (Pydantic).
-4. Jede vorgeschlagene Order durch `risk_guardrails.evaluate_order` prüfen;
-   nur freigegebene Orders werden ausgeführt.
+4. Für jede positionsaufbauende Order (buy/short) wird zuerst die
+   Positionsgrösse volatilitätsadjustiert skaliert
+   (`position_sizing.compute_scaling_factors`/`scale_order_size`, siehe
+   unten), dann durch `risk_guardrails.evaluate_order` geprüft; nur
+   freigegebene Orders werden ausgeführt.
 5. Aktien/ETFs laufen über echte Alpaca-Paper-Orders (aktuell alle
    Watchlist-Titel inkl. der gehebelten ETF-Proxies NVDL/TSDD); ein
    `manual_simulation`-Pfad für echte strukturierte Produkte existiert
@@ -70,6 +74,22 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   Leitplanken, obwohl sie wirtschaftlich weiterhin 2x gehebelt sind. Beide
   Checks greifen wie zuvor auf ihre jeweiligen Segment-/Positionsgrössen-
   Limiten über die übrigen Guardrails.
+- **Volatilitätsadjustierte Positionsgrössen-Skalierung (2026-09-19,
+  `src/position_sizing.py`):** Die von Claude vorgeschlagene Grösse jeder
+  buy/short-Order wird VOR der Kap.-6.8-Guardrail-Prüfung mit
+  Universums-Ø-Volatilität / Symbol-Volatilität skaliert (rollierende
+  20-Tage-annualisierte Volatilität, dieselbe Grösse wie
+  `data_fetch.MarketSnapshot.volatility_20d_annualized` - kein
+  zusätzlicher Datenabruf). Der Faktor ist auf
+  `volatility_scaling_min_factor`/`_max_factor` in `risk_config.yaml`
+  (Default 0.5x-1.5x) geclippt: unterdurchschnittlich volatile Titel werden
+  hochskaliert, überdurchschnittlich volatile runterskaliert - eine
+  einfache Näherung an inverse-Volatility-Sizing. Wirkt ausdrücklich nur
+  INNERHALB der bestehenden Limiten (die skalierte Order durchläuft
+  danach dieselbe Guardrail-Prüfung wie jede andere), hebelt sie also
+  nicht aus. Sell/Cover-Orders und Symbole ohne berechenbare Volatilität
+  (zu kurze Historie) werden nicht skaliert. Der angewendete Faktor wird
+  pro Trade im Report dokumentiert.
 - **"Kein Margin-Trading"** wird als "keine gehebelte Kaufkraft über 1x
   Cash hinaus" interpretiert (`risk_guardrails.check_no_margin`). Das für
   Shorting technisch nötige Alpaca-Margin-Konto ist davon ausgenommen, da

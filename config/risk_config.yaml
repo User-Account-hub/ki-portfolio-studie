@@ -87,3 +87,19 @@ circuit_breaker_drawdown_pct: -0.25
 # Richtungen (Kauf/Short UND Verkauf/Cover) - ein Spread kostet unabhängig
 # von der Handelsrichtung. 0.001 = 0.1% des Notional-Betrags je Trade.
 transaction_cost_pct_of_notional: 0.001
+
+# --- Volatilitätsadjustierte Positionsgrössen-Skalierung (2026-09-19) ---
+# Skaliert die von Claude vorgeschlagene Grösse einer positionsaufbauenden
+# Order (buy/short) VOR der Guardrail-Prüfung oben mit
+# Universums-Ø-Volatilität / Symbol-Volatilität (rollierende 20-Tage-
+# annualisierte Volatilität, siehe src/position_sizing.py und
+# data_fetch.MarketSnapshot.volatility_20d_annualized). Nur eine
+# Verfeinerung INNERHALB der Kap.-6.8-Limiten oben - die skalierte Grösse
+# durchläuft danach dieselbe Guardrail-Prüfung wie jede andere Order, kann
+# also keines der obigen Limits aushebeln.
+# Untergrenze des Skalierungsfaktors (stark überdurchschnittlich volatile
+# Titel werden nie staerker als auf diesen Faktor verkleinert).
+volatility_scaling_min_factor: 0.5
+# Obergrenze des Skalierungsfaktors (stark unterdurchschnittlich volatile
+# Titel werden nie staerker als auf diesen Faktor vergroessert).
+volatility_scaling_max_factor: 1.5

@@ -32,6 +32,11 @@ class RiskConfig:
     # Anteil des Notional-Betrags, der bei jeder Order-Ausführung tatsächlich
     # vom Cash abgezogen wird (siehe execution.py). Gilt für beide Richtungen.
     transaction_cost_pct_of_notional: float
+    # Volatilitaetsadjustierte Positionsgroessen-Skalierung (2026-09-19) -
+    # Ober-/Untergrenze des Skalierungsfaktors, siehe src/position_sizing.py
+    # und risk_config.yaml fuer die vollstaendige Begruendung.
+    volatility_scaling_min_factor: float
+    volatility_scaling_max_factor: float
 
     @classmethod
     def from_yaml(cls, path: str) -> "RiskConfig":

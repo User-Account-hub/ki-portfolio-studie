@@ -41,6 +41,8 @@ def make_config(**overrides) -> RiskConfig:
         min_cash_pct_of_nav=0.05,
         circuit_breaker_drawdown_pct=-0.25,
         transaction_cost_pct_of_notional=0.001,
+        volatility_scaling_min_factor=0.5,
+        volatility_scaling_max_factor=1.5,
     )
     defaults.update(overrides)
     return RiskConfig(**defaults)

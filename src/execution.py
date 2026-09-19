@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from src import broker_alpaca, correlation, db
+from src import broker_alpaca, correlation, db, position_sizing
 from src.config import RiskConfig
 from src.order_schema import STRUCTURED_INSTRUMENT_TYPES, TRADABLE_INSTRUMENT_TYPES, OrderSide, ProposedOrder
 from src.risk_guardrails import (
@@ -67,6 +67,11 @@ class ExecutedOrderResult:
     # Korrelations-Beobachtung (rein dokumentarisch, kein Guardrail - siehe
     # src/correlation.py) - nur fuer genehmigte BUY-Orders befuellt.
     correlation_warnings: list[correlation.CorrelationWarning] = field(default_factory=list)
+    # Volatilitaetsadjustierte Positionsgroessen-Skalierung (siehe
+    # src/position_sizing.py) - None, falls fuer diese Order keine Skalierung
+    # angewendet wurde (sell/cover, oder keine Vola-Daten fuer das Symbol).
+    # `order` oben traegt bereits die skalierte Groesse, falls vorhanden.
+    volatility_scaling: position_sizing.VolatilityScaling | None = None
 
 
 def resolve_price(symbol: str, underlying_symbol: str | None, current_prices: dict[str, float]) -> float:
@@ -313,6 +318,7 @@ def execute_proposed_orders(
     symbol_metadata: dict | None = None,
     peak_nav: float | None = None,
     correlation_matrix: pd.DataFrame | None = None,
+    volatility_scaling: dict[str, position_sizing.VolatilityScaling] | None = None,
 ) -> list[ExecutedOrderResult]:
     results: list[ExecutedOrderResult] = []
     risk_check_log = []
@@ -327,6 +333,21 @@ def execute_proposed_orders(
             results.append(ExecutedOrderResult(order=order, approved=False, reasons=[str(exc)]))
             risk_check_log.append({"symbol": order.symbol, "approved": False, "reasons": [str(exc)]})
             continue
+
+        # Volatilitaetsadjustierte Positionsgroessen-Skalierung (siehe
+        # src/position_sizing.py) - nur fuer positionsaufbauende Seiten
+        # (buy/short) und VOR der Guardrail-Pruefung unten, sodass die
+        # Kap.-6.8-Limiten anschliessend auf die bereits skalierte Groesse
+        # angewendet werden (Verfeinerung innerhalb der Limiten, kein
+        # zusaetzliches Veto und kein Aushebeln der Limiten).
+        scaling: position_sizing.VolatilityScaling | None = None
+        if order.side in (OrderSide.BUY, OrderSide.SHORT) and volatility_scaling:
+            scaling = volatility_scaling.get(order.symbol)
+        if scaling is not None:
+            scaled_quantity, scaled_notional = position_sizing.scale_order_size(
+                order.quantity, order.notional, scaling
+            )
+            order = order.model_copy(update={"quantity": scaled_quantity, "notional": scaled_notional})
 
         open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
         ctx = build_context(
@@ -345,7 +366,9 @@ def execute_proposed_orders(
         risk_check_log.append({"symbol": order.symbol, "approved": check.approved, "reasons": check.reasons})
 
         if not check.approved:
-            results.append(ExecutedOrderResult(order=order, approved=False, reasons=check.reasons))
+            results.append(
+                ExecutedOrderResult(order=order, approved=False, reasons=check.reasons, volatility_scaling=scaling)
+            )
             continue
 
         order_side = OrderSide(order.side)
@@ -400,6 +423,7 @@ def execute_proposed_orders(
             ExecutedOrderResult(
                 order=order, approved=True, reasons=[], fill_price=fill.filled_price,
                 correlation_warnings=correlation_warnings,
+                volatility_scaling=scaling,
             )
         )
 

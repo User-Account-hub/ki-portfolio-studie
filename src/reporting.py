@@ -170,13 +170,28 @@ def generate_report(
     lines.append("")
 
     lines.append("## Trades in diesem Lauf")
+    lines.append(
+        "_Vol-Skalierung: Positionsgrösse buy/short-Orders vor der Guardrail-Prüfung mit "
+        "Universums-Ø-Volatilität / Symbol-Volatilität skaliert (rollierende 20-Tage-annualisierte "
+        "Volatilität, Faktor geclippt auf das in risk_config.yaml konfigurierte Band) - "
+        "Verfeinerung innerhalb der Kap.-6.8-Limiten, kein zusätzliches Veto. \"-\" = keine "
+        "Skalierung angewendet (sell/cover oder keine Volatilitätsdaten für das Symbol)._"
+    )
     if executed_results:
-        lines.append("| Symbol | Seite | Status | Begründung |")
-        lines.append("|---|---|---|---|")
+        lines.append("| Symbol | Seite | Status | Vol-Skalierung | Begründung |")
+        lines.append("|---|---|---|---|---|")
         for r in executed_results:
             status = "✅ ausgeführt" if r.approved else "❌ abgelehnt"
             reason = "; ".join(r.reasons) if r.reasons else r.order.rationale
-            lines.append(f"| {r.order.symbol} | {r.order.side.value} | {status} | {reason} |")
+            if r.volatility_scaling is not None:
+                vs = r.volatility_scaling
+                scaling_display = (
+                    f"{vs.scaling_factor:.2f}x (Vol {vs.annualized_volatility:.1%} vs. "
+                    f"Ø {vs.universe_avg_volatility:.1%})"
+                )
+            else:
+                scaling_display = "-"
+            lines.append(f"| {r.order.symbol} | {r.order.side.value} | {status} | {scaling_display} | {reason} |")
     else:
         lines.append("_Keine Order-Vorschläge in diesem Lauf._")
     lines.append("")
