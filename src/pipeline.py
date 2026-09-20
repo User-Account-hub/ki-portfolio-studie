@@ -4,9 +4,11 @@ reconstruct_nav_history must be kept in sync with this cadence via its
 `freqs` parameter).
 
 Steps:
-  0. EINMALIGE Uebergangs-Sicherheitspruefung (siehe
-     _pilot_phase_positions_still_open weiter unten) - Pilotphase -> offizielle
-     Studie, nur bis zum erfolgreichen Portfolio-Reset relevant.
+  0a. EINMALIGE Uebergangs-Sicherheitspruefung (siehe
+      _pilot_phase_positions_still_open weiter unten) - Pilotphase -> offizielle
+      Studie, nur bis zum erfolgreichen Portfolio-Reset relevant.
+  0b. Idempotenz-Sperre (siehe _already_decided_today weiter unten, Kap. 12.7) -
+      dauerhaft, verhindert eine doppelte Handelsentscheidung am selben Tag.
   1. Load config, connect to DB.
   2. Fetch market data for the watchlist + all open positions.
   3. Mandatory sweep: force-close any short position breaching its stop-loss,
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import sys
 
 import pandas as pd
@@ -165,6 +168,39 @@ def _pilot_phase_positions_still_open(
     oder ausschliesslich welche, die nach dem Studienstart eroeffnet wurden -
     also legitime Trades der offiziellen Studie, keine Pilotphase-Reste)."""
     return [r for r in open_position_rows if pd.Timestamp(r["opened_at"]) < study_start]
+
+
+# ============================================================================
+# IDEMPOTENZ-SPERRE (2026-09-21, Kap. 12.7 "Datenintegritaet") - verhindert
+# eine doppelte Handelsentscheidung/-ausfuehrung am selben Kalendertag, falls
+# die Pipeline versehentlich zweimal am selben Tag ausgeloest wird (z.B. ein
+# manueller workflow_dispatch zusaetzlich zum planmaessigen Cron-Lauf). Anders
+# als die weiter oben stehende Uebergangs-Sicherheitspruefung ist das KEIN
+# einmaliger, wieder zu entfernender Mechanismus, sondern ein dauerhafter
+# Guardrail - Kap. 12.7 verlangt idempotente Laeufe generell, nicht nur fuer
+# den Studienstart-Uebergang.
+# ============================================================================
+
+
+def _is_force_rerun_requested(force: bool | None) -> bool:
+    """`force` (Funktionsparameter, siehe run()) hat Vorrang vor der
+    Umgebungsvariable FORCE_RERUN - erlaubt sowohl eine programmatische
+    Ausnahme (Tests, ein zukuenftiges CLI-Flag) als auch eine rein
+    Environment-basierte (z.B. ueber einen GitHub-Actions-workflow_dispatch-
+    Input, siehe weekly_pipeline.yml). Akzeptiert die ueblichen "truthy"
+    String-Schreibweisen ("1"/"true"/"yes", gross-/kleinschreibungsunabhaengig) -
+    alles andere (inkl. fehlender oder leerer Wert) gilt als nicht gesetzt."""
+    if force is not None:
+        return force
+    return os.getenv("FORCE_RERUN", "").strip().lower() in ("1", "true", "yes")
+
+
+def _already_decided_today(conn, portfolio_id: int, claude_model: str):
+    """Liefert den heutigen "echten" Handelsentscheidungs-Eintrag (siehe
+    db.get_successful_decision_today's Docstring fuer die genaue Abgrenzung
+    zu anderen Decision-Arten) oder None, falls heute noch keine
+    abgeschlossene Handelsentscheidung stattgefunden hat."""
+    return db.get_successful_decision_today(conn, portfolio_id, claude_model)
 
 
 # Puffer über die eigentlich benötigten 60 Handelstage hinaus, damit
@@ -429,7 +465,13 @@ def _maybe_run_deep_reflection(
     )
 
 
-def run() -> None:
+def run(force: bool | None = None) -> None:
+    """`force` überschreibt die Idempotenz-Sperre (siehe Block-Kommentar bei
+    _is_force_rerun_requested oben) für eine bewusste manuelle Wiederholung
+    am selben Tag - None (Default) lässt die Entscheidung an die
+    Umgebungsvariable FORCE_RERUN, True erzwingt einen Rerun unabhängig
+    davon, False erzwingt NIE einen Rerun (auch wenn FORCE_RERUN gesetzt
+    wäre - z.B. für Tests, die die Sperre gezielt prüfen wollen)."""
     app_config = AppConfig.load()
     risk_config = RiskConfig.from_yaml(app_config.risk_config_path)
     watchlist = Watchlist.from_yaml(app_config.watchlist_path)
@@ -472,6 +514,35 @@ def run() -> None:
                 portfolio_id=portfolio_row["id"],
                 model="pipeline_guard",
                 prompt="(kein Prompt - Uebergangs-Sicherheitspruefung, Claude wurde nicht aufgerufen)",
+                raw_response=None,
+                proposed_orders=None,
+                risk_check_result=[{"info": message}],
+                rationale=message,
+                forced_action=False,
+                approved=False,
+                executed=False,
+            )
+            return
+
+        # Idempotenz-Sperre (siehe Block-Kommentar bei _is_force_rerun_requested
+        # oben) - ebenfalls VOR jedem Marktdaten-Abruf/Claude-Aufruf, damit ein
+        # blockierter Lauf wirklich nichts weiter tut (kein zweiter Claude-
+        # Aufruf, kein zusaetzlicher Trade), statt nur den Handelsteil zu
+        # ueberspringen.
+        existing_decision = _already_decided_today(conn, portfolio_row["id"], app_config.claude_model)
+        if existing_decision is not None and not _is_force_rerun_requested(force):
+            message = (
+                f"Für heute liegt bereits eine abgeschlossene Handelsentscheidung vor "
+                f"(decisions.id={existing_decision['id']}, {existing_decision['created_at']}) - Lauf "
+                "übersprungen, um eine doppelte Ausführung am selben Tag zu vermeiden. Für eine bewusste "
+                "manuelle Wiederholung FORCE_RERUN=true setzen oder force=True übergeben."
+            )
+            log.warning(message)
+            db.insert_decision(
+                conn,
+                portfolio_id=portfolio_row["id"],
+                model="pipeline_guard",
+                prompt="(kein Prompt - Idempotenz-Sperre, Claude wurde nicht aufgerufen)",
                 raw_response=None,
                 proposed_orders=None,
                 risk_check_result=[{"info": message}],

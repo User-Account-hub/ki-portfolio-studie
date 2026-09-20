@@ -159,6 +159,39 @@ def count_trades_today_by_symbol(conn: sqlite3.Connection, portfolio_id: int) ->
     return {r["symbol"]: r["cnt"] for r in rows}
 
 
+def get_successful_decision_today(
+    conn: sqlite3.Connection, portfolio_id: int, model: str
+) -> Optional[sqlite3.Row]:
+    """Kap. 12.7 (2026-09-21, Idempotenz-Sperre - siehe
+    pipeline._already_decided_today): der (falls vorhanden) heutige
+    "echte" Handelsentscheidungs-Eintrag - Claude wurde aufgerufen UND seine
+    Antwort wurde erfolgreich in eine Order-Liste geparst
+    (proposed_orders IS NOT NULL), unabhängig davon, ob am Ende irgendeine
+    Order genehmigt/ausgeführt wurde (auch "keine Order vorgeschlagen" oder
+    "alle abgelehnt" zählt als abgeschlossene Entscheidung).
+
+    `model = model` (der Claude-Modellname, nicht z.B. 'deep_reflection',
+    'risk_guardrail' oder 'pipeline_guard') UND `proposed_orders IS NOT NULL`
+    grenzen das bewusst von anderen Decision-Arten desselben Tages ab:
+    - Börse-geschlossen-Skip: proposed_orders IS NULL.
+    - OrderParsingError (Claude wurde aufgerufen, Antwort aber nicht
+      parsebar): proposed_orders IS NULL - zählt bewusst NICHT als
+      abgeschlossene Entscheidung, ein erneuter Versuch am selben Tag soll
+      möglich bleiben.
+    - Monatliche Tiefenreflexion, erzwungene Stop-Loss-Aktionen, der
+      pipeline_guard-Übergangs-Check: anderer `model`-Wert.
+    """
+    today = date.today().isoformat()
+    return conn.execute(
+        """
+        SELECT * FROM decisions
+        WHERE portfolio_id = ? AND model = ? AND proposed_orders IS NOT NULL AND date(created_at) = ?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (portfolio_id, model, today),
+    ).fetchone()
+
+
 def insert_decision(
     conn: sqlite3.Connection,
     portfolio_id: int,

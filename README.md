@@ -160,6 +160,22 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   Guardrail-Prüfung noch die Order-Ausführung werden davon beeinflusst; ein
   einfaches 3-Phasen-Regelwerk ist kein Beweis, dass Claudes 5-Phasen-
   Einschätzung falsch liegt.
+- **Idempotenz-Sperre (Kap. 12.7 "Datenintegrität", 2026-09-21,
+  `db.get_successful_decision_today`, `pipeline._already_decided_today`):**
+  ein dauerhafter Guardrail (kein Übergangs-Mechanismus wie der obige) -
+  existiert für den heutigen Kalendertag bereits ein abgeschlossener
+  Handelsentscheidungs-Eintrag (Claude wurde aufgerufen UND die Antwort
+  wurde erfolgreich in eine Order-Liste geparst), bricht ein erneuter Lauf
+  am selben Tag sauber ab: kein zweiter Claude-Aufruf, kein Marktdaten-Abruf,
+  kein zusätzlicher Trade, aber ein dokumentierender `pipeline_guard`-
+  Decision-Eintrag. Ein Börse-geschlossen-Skip oder ein `OrderParsingError`
+  zählen bewusst NICHT als abgeschlossene Entscheidung (`proposed_orders`
+  bleibt dabei `NULL`) - ein erneuter Versuch nach einem Parsing-Fehler am
+  selben Tag muss möglich bleiben. Ausnahme für bewusste manuelle
+  Wiederholungen: `force=True` als Parameter an `run()` oder die
+  Umgebungsvariable `FORCE_RERUN=true` (im CI über den
+  `force_rerun`-Input des `workflow_dispatch`-Triggers, siehe
+  `weekly_pipeline.yml`) übergeht die Sperre.
 - **Selbstkonsistenz-Prüfung der monatlichen Tiefenreflexion (2026-09-19,
   Kap. 6.12.3, `deep_reflection_schema.check_self_consistency`,
   `pipeline._maybe_run_deep_reflection`):** Claude wird für dieselbe

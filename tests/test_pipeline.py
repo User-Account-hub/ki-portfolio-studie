@@ -327,6 +327,10 @@ def _fail_if_called(*args, **kwargs):
     raise AssertionError("darf bei ausstehendem Reset nicht aufgerufen werden")
 
 
+def _guard_passed_marker(*args, **kwargs):
+    raise RuntimeError("guard_passed")
+
+
 def test_run_aborts_cleanly_when_pilot_phase_positions_still_open(tmp_path, monkeypatch):
     """Integrationstest der eigentlichen Verdrahtung in run() (nicht nur der
     reinen Hilfsfunktion oben): kein Claude-Aufruf, kein Marktdaten-Abruf
@@ -374,9 +378,6 @@ def test_run_proceeds_past_guard_when_no_pilot_phase_positions_remain(tmp_path, 
     monkeypatch.setattr(AppConfig, "load", lambda: fake_config)
     monkeypatch.setattr(pipeline.broker_alpaca, "get_trading_client", lambda *a, **k: object())
 
-    def _guard_passed_marker(*args, **kwargs):
-        raise RuntimeError("guard_passed")
-
     monkeypatch.setattr(pipeline.data_fetch, "fetch_market_snapshots", _guard_passed_marker)
 
     with pytest.raises(RuntimeError, match="guard_passed"):
@@ -402,3 +403,140 @@ def test_fetch_news_context_returns_empty_string_on_unexpected_error(monkeypatch
 
     monkeypatch.setattr(pipeline.news_feed, "fetch_all_feeds", _raise)
     assert pipeline._fetch_news_context() == ""
+
+
+# --- Idempotenz-Sperre (2026-09-21, Kap. 12.7) -------------------------------
+
+
+def _insert_todays_successful_decision(db_path: Path, model: str = "claude-sonnet-5") -> None:
+    conn = sqlite3.connect(str(db_path))
+    portfolio_id = conn.execute("SELECT id FROM portfolios WHERE name = 'test'").fetchone()[0]
+    today = pd.Timestamp.today().strftime("%Y-%m-%d")
+    conn.execute(
+        """
+        INSERT INTO decisions (portfolio_id, created_at, model, prompt, proposed_orders, approved, executed)
+        VALUES (?, ?, ?, 'p', '[]', 1, 1)
+        """,
+        (portfolio_id, f"{today} 10:00:00", model),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _make_file_db_without_open_positions(tmp_path) -> Path:
+    db_path = _make_file_db_with_pilot_position(tmp_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE positions SET status = 'closed', quantity = 0")  # wie nach erfolgreichem Reset
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_is_force_rerun_requested_parameter_takes_precedence(monkeypatch):
+    monkeypatch.setenv("FORCE_RERUN", "false")
+    assert pipeline._is_force_rerun_requested(True) is True
+    monkeypatch.setenv("FORCE_RERUN", "true")
+    assert pipeline._is_force_rerun_requested(False) is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "Yes"])
+def test_is_force_rerun_requested_accepts_truthy_env_values(monkeypatch, value):
+    monkeypatch.setenv("FORCE_RERUN", value)
+    assert pipeline._is_force_rerun_requested(None) is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "", "garbage"])
+def test_is_force_rerun_requested_rejects_non_truthy_env_values(monkeypatch, value):
+    monkeypatch.setenv("FORCE_RERUN", value)
+    assert pipeline._is_force_rerun_requested(None) is False
+
+
+def test_is_force_rerun_requested_false_when_env_unset(monkeypatch):
+    monkeypatch.delenv("FORCE_RERUN", raising=False)
+    assert pipeline._is_force_rerun_requested(None) is False
+
+
+def test_run_aborts_cleanly_when_already_decided_today(tmp_path, monkeypatch):
+    """Kernanforderung: eine bereits abgeschlossene heutige Handelsentscheidung
+    muss einen zweiten Lauf sauber stoppen - kein Claude-Aufruf, kein
+    Marktdaten-Abruf, kein zusaetzlicher Trade, aber ein dokumentierender
+    pipeline_guard-Eintrag."""
+    db_path = _make_file_db_without_open_positions(tmp_path)
+    _insert_todays_successful_decision(db_path)
+    fake_config = make_fake_app_config(db_path)
+
+    monkeypatch.delenv("FORCE_RERUN", raising=False)
+    monkeypatch.setattr(AppConfig, "load", lambda: fake_config)
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_trading_client", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline, "get_trading_decision", _fail_if_called)
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_market_snapshots", _fail_if_called)
+
+    pipeline.run()  # darf NICHT raisen
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    guard_decisions = conn.execute("SELECT * FROM decisions WHERE model = 'pipeline_guard'").fetchall()
+    assert len(guard_decisions) == 1
+    assert "abgeschlossene Handelsentscheidung" in guard_decisions[0]["rationale"]
+    all_decisions = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    assert all_decisions == 2  # die urspruengliche + genau der eine Guard-Eintrag, kein zweiter Claude-Trade
+    conn.close()
+
+
+def test_run_with_force_parameter_true_bypasses_idempotency_lock(tmp_path, monkeypatch):
+    """Beweist, dass force=True ueber die Sperre hinauskommt - bricht bewusst
+    beim naechsten Schritt (Marktdaten-Abruf) mit einer Marker-Exception ab,
+    statt den kompletten weiteren Lauf zu mocken."""
+    db_path = _make_file_db_without_open_positions(tmp_path)
+    _insert_todays_successful_decision(db_path)
+    fake_config = make_fake_app_config(db_path)
+
+    monkeypatch.delenv("FORCE_RERUN", raising=False)
+    monkeypatch.setattr(AppConfig, "load", lambda: fake_config)
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_trading_client", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_market_snapshots", _guard_passed_marker)
+
+    with pytest.raises(RuntimeError, match="guard_passed"):
+        pipeline.run(force=True)
+
+
+def test_run_with_force_env_var_bypasses_idempotency_lock(tmp_path, monkeypatch):
+    """Wie oben, aber ueber die Umgebungsvariable statt den Funktionsparameter -
+    der Weg, den ein manueller GitHub-Actions-workflow_dispatch nutzen wuerde."""
+    db_path = _make_file_db_without_open_positions(tmp_path)
+    _insert_todays_successful_decision(db_path)
+    fake_config = make_fake_app_config(db_path)
+
+    monkeypatch.setenv("FORCE_RERUN", "true")
+    monkeypatch.setattr(AppConfig, "load", lambda: fake_config)
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_trading_client", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_market_snapshots", _guard_passed_marker)
+
+    with pytest.raises(RuntimeError, match="guard_passed"):
+        pipeline.run()
+
+
+def test_run_ignores_decision_from_a_previous_day(tmp_path, monkeypatch):
+    """Eine erfolgreiche Entscheidung von GESTERN darf einen heutigen Lauf
+    nicht blockieren."""
+    db_path = _make_file_db_without_open_positions(tmp_path)
+    conn = sqlite3.connect(str(db_path))
+    portfolio_id = conn.execute("SELECT id FROM portfolios WHERE name = 'test'").fetchone()[0]
+    yesterday = (pd.Timestamp.today() - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    conn.execute(
+        """
+        INSERT INTO decisions (portfolio_id, created_at, model, prompt, proposed_orders, approved, executed)
+        VALUES (?, ?, 'claude-sonnet-5', 'p', '[]', 1, 1)
+        """,
+        (portfolio_id, f"{yesterday} 10:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    fake_config = make_fake_app_config(db_path)
+    monkeypatch.setattr(AppConfig, "load", lambda: fake_config)
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_trading_client", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_market_snapshots", _guard_passed_marker)
+
+    with pytest.raises(RuntimeError, match="guard_passed"):
+        pipeline.run()

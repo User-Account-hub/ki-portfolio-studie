@@ -28,7 +28,17 @@ on:
     # PHASE2_START/`freqs` in src/metrics.py) muessen bei einer weiteren
     # Frequenzaenderung zusammen angepasst werden.
     - cron: "0 15 * * 1-5"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_rerun:
+        description: >-
+          Idempotenz-Sperre (Kap. 12.7) übergehen - nur für eine bewusste
+          manuelle Wiederholung am selben Kalendertag, an dem bereits eine
+          abgeschlossene Handelsentscheidung existiert (siehe
+          pipeline._already_decided_today). Normalerweise "false" lassen.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -76,6 +86,10 @@ jobs:
           RISK_CONFIG_PATH: ${{ vars.RISK_CONFIG_PATH || './config/risk_config.yaml' }}
           REPORTS_DIR: ${{ vars.REPORTS_DIR || './reports' }}
           RISK_FREE_RATE_ANNUAL: ${{ vars.RISK_FREE_RATE_ANNUAL || '0.04' }}
+          # Kap. 12.7 Idempotenz-Sperre (pipeline._is_force_rerun_requested) -
+          # leer/"false" bei jedem planmaessigen Cron-Lauf; nur bei einem
+          # manuellen workflow_dispatch mit force_rerun=true gesetzt.
+          FORCE_RERUN: ${{ github.event.inputs.force_rerun || 'false' }}
         run: python -m src.pipeline
 
       - name: Upload report as workflow artifact

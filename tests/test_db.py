@@ -6,6 +6,7 @@ stand-in.
 """
 from __future__ import annotations
 
+import datetime
 import sqlite3
 from pathlib import Path
 
@@ -473,3 +474,96 @@ def test_reduce_or_close_position_partial_reduction_keeps_conditions_open():
 
     row = conn.execute("SELECT status FROM boundary_conditions WHERE id = ?", (cond_id,)).fetchone()
     assert row["status"] == "open"
+
+
+# --- get_successful_decision_today (2026-09-21, Kap. 12.7 Idempotenz-Sperre) --
+
+
+def insert_raw_decision(
+    conn: sqlite3.Connection,
+    portfolio_id: int,
+    model: str,
+    created_at: str,
+    proposed_orders: str | None,
+) -> int:
+    """Umgeht db.insert_decision (das immer datetime('now') als created_at
+    verwendet) - fuer diese Tests muss created_at gezielt auf 'heute'/'gestern'
+    gesetzt werden koennen."""
+    cur = conn.execute(
+        """
+        INSERT INTO decisions (portfolio_id, created_at, model, prompt, proposed_orders, approved, executed)
+        VALUES (?, ?, ?, 'p', ?, 1, 1)
+        """,
+        (portfolio_id, created_at, model, proposed_orders),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def test_get_successful_decision_today_none_when_no_decisions_exist():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    assert db.get_successful_decision_today(conn, portfolio_id, "claude-sonnet-5") is None
+
+
+def test_get_successful_decision_today_finds_matching_decision():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    today = datetime.date.today().isoformat()
+    decision_id = insert_raw_decision(
+        conn, portfolio_id, "claude-sonnet-5", f"{today} 15:00:00", proposed_orders="[]"
+    )
+    result = db.get_successful_decision_today(conn, portfolio_id, "claude-sonnet-5")
+    assert result is not None
+    assert result["id"] == decision_id
+
+
+def test_get_successful_decision_today_ignores_proposed_orders_null():
+    """Boerse-geschlossen-Skip UND OrderParsingError setzen proposed_orders
+    NICHT - beide duerfen nicht als abgeschlossene Entscheidung zaehlen (ein
+    erneuter Versuch am selben Tag muss z.B. nach einem Parsing-Fehler
+    moeglich bleiben)."""
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    today = datetime.date.today().isoformat()
+    insert_raw_decision(conn, portfolio_id, "claude-sonnet-5", f"{today} 15:00:00", proposed_orders=None)
+    assert db.get_successful_decision_today(conn, portfolio_id, "claude-sonnet-5") is None
+
+
+def test_get_successful_decision_today_ignores_other_models():
+    """deep_reflection/risk_guardrail/pipeline_guard-Eintraege duerfen nicht
+    als tagesabschliessende Handelsentscheidung zaehlen."""
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    today = datetime.date.today().isoformat()
+    insert_raw_decision(conn, portfolio_id, "deep_reflection", f"{today} 15:00:00", proposed_orders="[]")
+    insert_raw_decision(conn, portfolio_id, "risk_guardrail", f"{today} 15:00:00", proposed_orders="[]")
+    insert_raw_decision(conn, portfolio_id, "pipeline_guard", f"{today} 15:00:00", proposed_orders="[]")
+    assert db.get_successful_decision_today(conn, portfolio_id, "claude-sonnet-5") is None
+
+
+def test_get_successful_decision_today_ignores_previous_days():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    insert_raw_decision(conn, portfolio_id, "claude-sonnet-5", f"{yesterday} 15:00:00", proposed_orders="[]")
+    assert db.get_successful_decision_today(conn, portfolio_id, "claude-sonnet-5") is None
+
+
+def test_get_successful_decision_today_returns_most_recent_of_several():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    today = datetime.date.today().isoformat()
+    insert_raw_decision(conn, portfolio_id, "claude-sonnet-5", f"{today} 10:00:00", proposed_orders="[]")
+    later_id = insert_raw_decision(conn, portfolio_id, "claude-sonnet-5", f"{today} 15:00:00", proposed_orders="[]")
+    result = db.get_successful_decision_today(conn, portfolio_id, "claude-sonnet-5")
+    assert result["id"] == later_id
+
+
+def test_get_successful_decision_today_scoped_to_portfolio():
+    conn = make_conn()
+    portfolio_a = make_portfolio(conn, name="a")
+    portfolio_b = make_portfolio(conn, name="b")
+    today = datetime.date.today().isoformat()
+    insert_raw_decision(conn, portfolio_a, "claude-sonnet-5", f"{today} 15:00:00", proposed_orders="[]")
+    assert db.get_successful_decision_today(conn, portfolio_b, "claude-sonnet-5") is None
