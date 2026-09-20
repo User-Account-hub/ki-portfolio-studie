@@ -4,6 +4,9 @@ reconstruct_nav_history must be kept in sync with this cadence via its
 `freqs` parameter).
 
 Steps:
+  0. EINMALIGE Uebergangs-Sicherheitspruefung (siehe
+     _pilot_phase_positions_still_open weiter unten) - Pilotphase -> offizielle
+     Studie, nur bis zum erfolgreichen Portfolio-Reset relevant.
   1. Load config, connect to DB.
   2. Fetch market data for the watchlist + all open positions.
   3. Mandatory sweep: force-close any short position breaching its stop-loss,
@@ -124,6 +127,43 @@ def _compute_market_phases(
     SYSTEM_PROMPT-Anforderung 1) - rein dokumentarisch, siehe execution.py/
     reporting.py, kein Guardrail-Veto."""
     return market_phase.classify_universe_market_phases(snapshots)
+
+
+# ============================================================================
+# EINMALIGE UEBERGANGS-SICHERHEITSPRUEFUNG (2026-09-21, Pilotphase -> offizielle
+# Studie, Kap. 6.3) - siehe RESET_2026-09-21.md fuer den zugehoerigen,
+# vollstaendig geplanten, aber noch nicht abgeschlossenen Portfolio-Reset
+# (alle Pilotphase-Positionen bei Alpaca UND lokal schliessen, Cash auf
+# initial_cash_balance zuruecksetzen). Ohne diesen Check wuerde ein Lauf, der
+# startet BEVOR der Reset tatsaechlich durchgefuehrt wurde, auf dem
+# verschmutzten Pilotphase-Zustand (offene Positionen, abweichender Cash-
+# Stand) als vermeintlichem "Tag 1" der offiziellen Studie aufsetzen.
+#
+# Erkennung: jede noch offene Position mit `opened_at` VOR dem offiziellen
+# Studienstart (deep_reflection_prompt.OFFICIAL_STUDY_START) ist zwingend ein
+# Pilotphase-Ueberbleibsel - sie kann nur aus der Zeit vor dem Reset stammen.
+# Sobald der Reset erfolgreich durchgefuehrt wurde (alle diese Positionen auf
+# status='closed' gesetzt), liefert `_pilot_phase_positions_still_open` fuer
+# IMMER eine leere Liste, unabhaengig davon, an welchem Tag der Reset
+# nachgeholt wird - der Check wird dann automatisch und dauerhaft wirkungslos.
+#
+# GEDACHT NUR FUER DIESEN UEBERGANG: Sobald der Reset bestaetigt durchgefuehrt
+# wurde, kann dieser gesamte Block (diese Funktion UND ihr Aufruf in run())
+# wieder entfernt werden - das ist kein dauerhafter Guardrail, sondern eine
+# einmalige Absicherung gegen genau dieses eine Uebergangsfenster.
+# ============================================================================
+
+
+def _pilot_phase_positions_still_open(
+    open_position_rows,
+    study_start: pd.Timestamp = deep_reflection_prompt.OFFICIAL_STUDY_START,
+) -> list:
+    """Liefert alle Zeilen aus `open_position_rows`, deren `opened_at` vor
+    `study_start` liegt (siehe Block-Kommentar oben fuer die Begruendung).
+    Leere Liste = kein Reset-Blocker (entweder gar keine offenen Positionen,
+    oder ausschliesslich welche, die nach dem Studienstart eroeffnet wurden -
+    also legitime Trades der offiziellen Studie, keine Pilotphase-Reste)."""
+    return [r for r in open_position_rows if pd.Timestamp(r["opened_at"]) < study_start]
 
 
 # Puffer über die eigentlich benötigten 60 Handelstage hinaus, damit
@@ -394,6 +434,34 @@ def run() -> None:
         db.ensure_boundary_conditions_table(conn)  # idempotente Migration, siehe db.py-Docstring
         portfolio_row = db.get_portfolio(conn, app_config.portfolio_name)
         open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
+
+        # EINMALIGE Uebergangs-Sicherheitspruefung, siehe Block-Kommentar bei
+        # _pilot_phase_positions_still_open oben - bewusst VOR jedem
+        # Marktdaten-Abruf/Claude-Aufruf, damit ein blockierter Lauf wirklich
+        # sauber abbricht statt nur den Handelsteil zu ueberspringen.
+        pending_reset_positions = _pilot_phase_positions_still_open(open_position_rows)
+        if pending_reset_positions:
+            message = (
+                f"Reset noch nicht durchgeführt, Lauf übersprungen: {len(pending_reset_positions)} "
+                f"offene Position(en) aus der Pilotphase (eröffnet vor "
+                f"{deep_reflection_prompt.OFFICIAL_STUDY_START.date()}) gefunden - siehe "
+                "RESET_2026-09-21.md für den geplanten Reset."
+            )
+            log.error(message)
+            db.insert_decision(
+                conn,
+                portfolio_id=portfolio_row["id"],
+                model="pipeline_guard",
+                prompt="(kein Prompt - Uebergangs-Sicherheitspruefung, Claude wurde nicht aufgerufen)",
+                raw_response=None,
+                proposed_orders=None,
+                risk_check_result=[{"info": message}],
+                rationale=message,
+                forced_action=False,
+                approved=False,
+                executed=False,
+            )
+            return
 
         price_lookup_symbols = sorted(
             set(watchlist.all_symbols())

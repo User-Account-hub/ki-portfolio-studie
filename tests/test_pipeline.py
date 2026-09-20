@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from src import db, pipeline
+from src.config import AppConfig
 from src.deep_reflection_prompt import OFFICIAL_STUDY_START
 from src.deep_reflection_schema import DeepReflectionRunResult
 
@@ -227,3 +228,156 @@ def test_second_call_failure_persists_nothing(monkeypatch):
         "SELECT * FROM decisions WHERE portfolio_id = ? AND model = 'deep_reflection'", (portfolio_row["id"],)
     ).fetchall()
     assert rows == []
+
+
+# --- _pilot_phase_positions_still_open (2026-09-21, EINMALIGE Uebergangs- ---
+# --- Sicherheitspruefung Pilotphase -> offizielle Studie, siehe pipeline.py --
+# --- Block-Kommentar und RESET_2026-09-21.md) --------------------------------
+
+
+def make_position_row(opened_at: str) -> dict:
+    return {"opened_at": opened_at}
+
+
+def test_pilot_phase_check_flags_position_opened_before_study_start():
+    positions = [make_position_row("2026-09-08 16:50:16")]
+    assert pipeline._pilot_phase_positions_still_open(positions) == positions
+
+
+def test_pilot_phase_check_ignores_position_opened_after_study_start():
+    positions = [make_position_row("2026-09-22 10:00:00")]
+    assert pipeline._pilot_phase_positions_still_open(positions) == []
+
+
+def test_pilot_phase_check_boundary_exactly_at_study_start_is_not_flagged():
+    """OFFICIAL_STUDY_START selbst (Mitternacht) gilt bereits als Tag 1 - eine
+    Position, die an diesem Tag eroeffnet wurde (zwingend NACH Mitternacht,
+    der Handel beginnt fruehestens 09:30 ET), ist ein legitimer Trade der
+    offiziellen Studie, kein Pilotphase-Rest."""
+    positions = [make_position_row(f"{OFFICIAL_STUDY_START.date()} 09:30:00")]
+    assert pipeline._pilot_phase_positions_still_open(positions) == []
+
+
+def test_pilot_phase_check_empty_when_no_open_positions():
+    assert pipeline._pilot_phase_positions_still_open([]) == []
+
+
+def test_pilot_phase_check_mixed_returns_only_pilot_positions():
+    old = make_position_row("2026-09-08 16:50:16")
+    new = make_position_row("2026-09-22 10:00:00")
+    assert pipeline._pilot_phase_positions_still_open([old, new]) == [old]
+
+
+def test_pilot_phase_check_becomes_permanently_empty_after_reset():
+    """Kernanforderung: sobald der Reset durchgefuehrt wurde (Pilotphase-
+    Positionen also nicht mehr in open_position_rows enthalten, weil
+    geschlossen), muss der Check dauerhaft leer bleiben - unabhaengig davon,
+    an welchem Tag der Reset nachgeholt wird."""
+    fresh_position_weeks_later = make_position_row("2026-10-15 11:00:00")
+    assert pipeline._pilot_phase_positions_still_open([fresh_position_weeks_later]) == []
+
+
+# --- pipeline.run(): frueher, sauberer Abbruch bei ausstehendem Reset -------
+
+
+def _make_file_db_with_pilot_position(tmp_path) -> Path:
+    """Ein datei-basiertes SQLite-DB (nicht :memory:) - noetig, weil
+    pipeline.run() ueber db.get_connection(app_config.db_path) eine EIGENE
+    Verbindung zu genau diesem Pfad oeffnet, siehe Modul-Docstring."""
+    db_path = tmp_path / "portfolio.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    conn.execute(
+        "INSERT INTO portfolios (name, currency, initial_cash_balance, cash_balance) VALUES (?, ?, ?, ?)",
+        ("test", "USD", 1_000_000.0, 78_328.42),
+    )
+    portfolio_id = conn.execute("SELECT id FROM portfolios WHERE name = 'test'").fetchone()[0]
+    conn.execute(
+        """
+        INSERT INTO positions (portfolio_id, symbol, instrument_type, side, quantity, avg_entry_price, opened_at)
+        VALUES (?, 'NVDA', 'equity', 'long', 216.838139955, 226.010092, '2026-09-08 16:50:16')
+        """,
+        (portfolio_id,),
+    )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def make_fake_app_config(db_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        anthropic_api_key="x",
+        claude_model="claude-sonnet-5",
+        alpaca_api_key="x",
+        alpaca_secret_key="x",
+        alpaca_base_url="https://paper-api.alpaca.markets",
+        db_path=str(db_path),
+        portfolio_name="test",
+        initial_cash_balance=1_000_000.0,
+        portfolio_currency="USD",
+        watchlist_path="./config/watchlist.yaml",
+        risk_config_path="./config/risk_config.yaml",
+        reports_dir=str(db_path.parent / "reports"),
+        risk_free_rate_annual=0.04,
+    )
+
+
+def _fail_if_called(*args, **kwargs):
+    raise AssertionError("darf bei ausstehendem Reset nicht aufgerufen werden")
+
+
+def test_run_aborts_cleanly_when_pilot_phase_positions_still_open(tmp_path, monkeypatch):
+    """Integrationstest der eigentlichen Verdrahtung in run() (nicht nur der
+    reinen Hilfsfunktion oben): kein Claude-Aufruf, kein Marktdaten-Abruf
+    (echter 'sauberer Abbruch', nicht nur ein uebersprungener Handelsteil),
+    genau ein dokumentierender Decision-Eintrag, DB unveraendert."""
+    db_path = _make_file_db_with_pilot_position(tmp_path)
+    fake_config = make_fake_app_config(db_path)
+
+    monkeypatch.setattr(AppConfig, "load", lambda: fake_config)
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_trading_client", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline, "get_trading_decision", _fail_if_called)
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_market_snapshots", _fail_if_called)
+
+    pipeline.run()  # darf NICHT raisen - ein erkannter ausstehender Reset ist kein Fehler
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    decisions = conn.execute("SELECT * FROM decisions WHERE model = 'pipeline_guard'").fetchall()
+    assert len(decisions) == 1
+    assert "Reset noch nicht durchgeführt" in decisions[0]["rationale"]
+    assert decisions[0]["approved"] == 0
+    assert decisions[0]["executed"] == 0
+
+    portfolio = conn.execute("SELECT * FROM portfolios WHERE name = 'test'").fetchone()
+    assert portfolio["cash_balance"] == pytest.approx(78_328.42)  # unveraendert
+    open_positions = conn.execute("SELECT COUNT(*) FROM positions WHERE status = 'open'").fetchone()[0]
+    assert open_positions == 1  # unveraendert - der Guard fasst die Position selbst nicht an
+    conn.close()
+
+
+def test_run_proceeds_past_guard_when_no_pilot_phase_positions_remain(tmp_path, monkeypatch):
+    """Beweist, dass der Guard nach einem erfolgreichen Reset (keine offene
+    Pilotphase-Position mehr) NICHT mehr greift - der Lauf muss ueber ihn
+    hinauskommen und den naechsten Schritt (Marktdaten-Abruf) erreichen.
+    Bricht dort bewusst mit einer eigenen Marker-Exception ab, statt den
+    kompletten weiteren Lauf (yfinance/Alpaca/Claude) zu mocken - das genuegt
+    als Beweis, dass der Guard passiert wurde."""
+    db_path = _make_file_db_with_pilot_position(tmp_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE positions SET status = 'closed', quantity = 0")  # wie nach erfolgreichem Reset
+    conn.commit()
+    conn.close()
+
+    fake_config = make_fake_app_config(db_path)
+    monkeypatch.setattr(AppConfig, "load", lambda: fake_config)
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_trading_client", lambda *a, **k: object())
+
+    def _guard_passed_marker(*args, **kwargs):
+        raise RuntimeError("guard_passed")
+
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_market_snapshots", _guard_passed_marker)
+
+    with pytest.raises(RuntimeError, match="guard_passed"):
+        pipeline.run()

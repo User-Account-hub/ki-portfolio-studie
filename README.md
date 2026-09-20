@@ -394,3 +394,12 @@ Wochenreport.
   Actions-Log sichtbar.
 - Keine Benachrichtigung (E-Mail/Slack) bei Fehlern oder Stop-Loss-
   Triggern - bei Bedarf leicht in `src/pipeline.py` ergänzbar.
+- **TEMPORÄR, nach dem Portfolio-Reset zu entfernen (2026-09-21):**
+  `pipeline._pilot_phase_positions_still_open` + ihr Aufruf in `run()` sind
+  eine einmalige Übergangs-Sicherheitsprüfung Pilotphase → offizielle Studie
+  (siehe `RESET_2026-09-21.md`) - solange der geplante Reset (alle
+  Pilotphase-Positionen bei Alpaca UND lokal schliessen) noch nicht
+  durchgeführt wurde, bricht ein Lauf sauber ab (kein Marktdaten-Abruf, kein
+  Claude-Aufruf), statt auf dem verschmutzten Zustand als "Tag 1" zu starten.
+  Kein dauerhafter Guardrail - nach erfolgreichem Reset wird die Prüfung für
+  immer wirkungslos (siehe Docstring dort) und kann komplett entfernt werden.
