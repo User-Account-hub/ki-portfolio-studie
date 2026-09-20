@@ -1,12 +1,16 @@
-"""Event-Kalender-Hinweis: bevorstehende Quartalsberichte (yfinance) und
-hardcodierte Makro-Termine (FOMC/CPI) als zusätzlicher Kontext für Claude.
+"""Event-Kalender-Hinweis: bevorstehende Quartalsberichte (yfinance),
+hardcodierte Makro-Termine (FOMC/CPI) und Options-Verfallstage (2026-09-21)
+als zusätzlicher Kontext für Claude.
 
 Rein informativ - KEIN Guardrail, KEIN automatisches Verbot. Ein erhöhtes
 Ereignisrisiko wird im Prompt-Kontext genannt (siehe prompt_builder.py),
 Claude entscheidet selbst, ob/wie es das in Positionsgrösse oder Timing
 einbezieht - dieselbe Philosophie wie das Kap.-7-Randbedingungs-Tracking
 und der Korrelations-Check (src/correlation.py): dokumentieren, nicht
-automatisch entscheiden.
+automatisch entscheiden. Für Options-Verfallstage gilt das erst recht: das
+Anlage-Universum handelt selbst keine Optionen (siehe README, "Wichtige
+Einschränkungen") - der Hinweis dokumentiert nur die historisch erhöhte
+Volatilität der zugrundeliegenden Aktien/ETFs an diesen Tagen.
 
 "Handelstage" ist hier eine einfache Mo-Fr-Näherung (pandas `bdate_range`),
 keine echte Börsenfeiertagsprüfung wie broker_alpaca.is_trading_day - für
@@ -61,6 +65,26 @@ CPI_RELEASE_DATES: list[datetime.date] = [
     datetime.date(2026, 12, 10),
 ]
 
+# Monate mit gleichzeitigem Verfall von Aktienindex-Futures, Index-Optionen
+# UND Aktienoptionen ("Hexensabbat"/"Triple Witching") - die staerkste der
+# beiden Verfallsauspraegungen unten. Anders als FOMC_DECISION_DATES/
+# CPI_RELEASE_DATES oben ist das kein hartcodiertes Datum, das jaehrlich neu
+# recherchiert werden muss, sondern eine feste, jedes Jahr gleich
+# wiederkehrende Kalenderregel.
+QUARTERLY_WITCHING_MONTHS = {3, 6, 9, 12}
+
+
+def third_friday_of_month(year: int, month: int) -> datetime.date:
+    """Regulaerer US-Options-Verfallstag (dritter Freitag des Monats,
+    "Hexensabbat" in den Quartalsmonaten oben) - BERECHNET statt hartcodiert,
+    da es sich (anders als FOMC-Sitzungen/CPI-Veroeffentlichungen) um eine
+    feste, nie von einer externen Ankuendigung abhaengende Kalenderregel
+    handelt."""
+    first_of_month = datetime.date(year, month, 1)
+    days_until_friday = (4 - first_of_month.weekday()) % 7  # Montag=0 ... Freitag=4
+    first_friday = first_of_month + datetime.timedelta(days=days_until_friday)
+    return first_friday + datetime.timedelta(weeks=2)
+
 
 @dataclass(frozen=True)
 class EarningsWarning:
@@ -71,7 +95,7 @@ class EarningsWarning:
 
 @dataclass(frozen=True)
 class MacroEvent:
-    name: str  # "FOMC" | "CPI"
+    name: str  # "FOMC" | "CPI" | "Hexensabbat (Options-Quartalsverfall)" | "Optionsverfall (monatlich)"
     event_date: datetime.date
     trading_days_until: int
 
@@ -151,12 +175,34 @@ def check_upcoming_earnings(
     return sorted(warnings, key=lambda w: (w.trading_days_until, w.symbol))
 
 
+def _upcoming_third_fridays(today: datetime.date, count_months: int = 2) -> list[tuple[str, datetime.date]]:
+    """Dritte Freitage des aktuellen und der naechsten `count_months - 1`
+    Monate, mit Name je nach QUARTERLY_WITCHING_MONTHS - genug Vorlauf, um
+    jedes uebliche kleine Event-Fenster (DEFAULT_EVENT_WINDOW_TRADING_DAYS)
+    sicher abzudecken. Ein bereits vergangener dritter Freitag DIESES Monats
+    wird trotzdem mitgeliefert; `_is_within_window` unten filtert ihn ueber
+    das `event_date >= today`-Kriterium korrekt heraus."""
+    results = []
+    year, month = today.year, today.month
+    for _ in range(count_months):
+        expiration = third_friday_of_month(year, month)
+        name = "Hexensabbat (Options-Quartalsverfall)" if month in QUARTERLY_WITCHING_MONTHS else "Optionsverfall (monatlich)"
+        results.append((name, expiration))
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return results
+
+
 def get_upcoming_macro_events(
     today: datetime.date,
     window_trading_days: int = DEFAULT_EVENT_WINDOW_TRADING_DAYS,
 ) -> list[MacroEvent]:
     """Portfolioweiter Hinweis (nicht symbolspezifisch) - siehe
-    FOMC_DECISION_DATES/CPI_RELEASE_DATES."""
+    FOMC_DECISION_DATES/CPI_RELEASE_DATES sowie (2026-09-21)
+    _upcoming_third_fridays/third_friday_of_month für die Options-
+    Verfallstage."""
     events = []
     for name, dates in (("FOMC", FOMC_DECISION_DATES), ("CPI", CPI_RELEASE_DATES)):
         for event_date in dates:
@@ -164,4 +210,9 @@ def get_upcoming_macro_events(
                 events.append(
                     MacroEvent(name=name, event_date=event_date, trading_days_until=trading_days_until(today, event_date))
                 )
+    for name, expiration in _upcoming_third_fridays(today):
+        if _is_within_window(expiration, today, window_trading_days):
+            events.append(
+                MacroEvent(name=name, event_date=expiration, trading_days_until=trading_days_until(today, expiration))
+            )
     return sorted(events, key=lambda e: e.event_date)

@@ -13,11 +13,14 @@ import pytest
 from src.event_calendar import (
     CPI_RELEASE_DATES,
     FOMC_DECISION_DATES,
+    QUARTERLY_WITCHING_MONTHS,
     EarningsWarning,
     MacroEvent,
+    _upcoming_third_fridays,
     check_upcoming_earnings,
     fetch_upcoming_earnings_date,
     get_upcoming_macro_events,
+    third_friday_of_month,
     trading_days_until,
 )
 
@@ -191,3 +194,80 @@ def test_fomc_and_cpi_dates_are_hardcoded_and_nonempty():
     assert len(CPI_RELEASE_DATES) >= 12
     assert all(isinstance(d, datetime.date) for d in FOMC_DECISION_DATES)
     assert all(isinstance(d, datetime.date) for d in CPI_RELEASE_DATES)
+
+
+# --- third_friday_of_month / Options-Verfallstage (2026-09-21) ---------------
+
+
+def test_third_friday_of_month_known_dates():
+    assert third_friday_of_month(2026, 1) == datetime.date(2026, 1, 16)
+    assert third_friday_of_month(2026, 3) == datetime.date(2026, 3, 20)
+    assert third_friday_of_month(2026, 9) == datetime.date(2026, 9, 18)
+    assert third_friday_of_month(2026, 10) == datetime.date(2026, 10, 16)
+
+
+def test_third_friday_of_month_is_always_a_friday():
+    for month in range(1, 13):
+        assert third_friday_of_month(2026, month).strftime("%A") == "Friday"
+
+
+def test_third_friday_of_month_handles_year_rollover():
+    assert third_friday_of_month(2027, 1) == datetime.date(2027, 1, 15)
+
+
+def test_quarterly_witching_months_are_march_june_september_december():
+    assert QUARTERLY_WITCHING_MONTHS == {3, 6, 9, 12}
+
+
+def test_upcoming_third_fridays_labels_quarterly_month_as_hexensabbat():
+    today = datetime.date(2026, 9, 1)  # September ist ein Hexensabbat-Monat
+    results = _upcoming_third_fridays(today, count_months=1)
+    assert results == [("Hexensabbat (Options-Quartalsverfall)", datetime.date(2026, 9, 18))]
+
+
+def test_upcoming_third_fridays_labels_regular_month_as_monatlich():
+    today = datetime.date(2026, 10, 1)  # Oktober ist KEIN Hexensabbat-Monat
+    results = _upcoming_third_fridays(today, count_months=1)
+    assert results == [("Optionsverfall (monatlich)", datetime.date(2026, 10, 16))]
+
+
+def test_upcoming_third_fridays_covers_multiple_months_including_year_rollover():
+    today = datetime.date(2026, 12, 1)
+    results = _upcoming_third_fridays(today, count_months=2)
+    assert results == [
+        ("Hexensabbat (Options-Quartalsverfall)", datetime.date(2026, 12, 18)),
+        ("Optionsverfall (monatlich)", datetime.date(2027, 1, 15)),
+    ]
+
+
+def test_get_upcoming_macro_events_flags_quarterly_witching_within_window():
+    today = datetime.date(2026, 9, 16)  # Mittwoch, Hexensabbat am 2026-09-18 (Freitag)
+    events = get_upcoming_macro_events(today, window_trading_days=3)
+    assert MacroEvent(
+        name="Hexensabbat (Options-Quartalsverfall)", event_date=datetime.date(2026, 9, 18), trading_days_until=2
+    ) in events
+
+
+def test_get_upcoming_macro_events_flags_regular_monthly_expiration_within_window():
+    today = datetime.date(2026, 10, 14)  # Mittwoch, Verfall am 2026-10-16 (Freitag)
+    events = get_upcoming_macro_events(today, window_trading_days=3)
+    assert MacroEvent(
+        name="Optionsverfall (monatlich)", event_date=datetime.date(2026, 10, 16), trading_days_until=2
+    ) in events
+
+
+def test_get_upcoming_macro_events_ignores_expiration_outside_window():
+    today = datetime.date(2026, 9, 22)  # Hexensabbat (18.09.) bereits vorbei, naechster Verfall (16.10.) weit weg
+    events = get_upcoming_macro_events(today, window_trading_days=3)
+    assert not any("Verfall" in e.name or "Hexensabbat" in e.name for e in events)
+
+
+def test_get_upcoming_macro_events_does_not_duplicate_fomc_or_cpi_with_expiration():
+    """CPI-Termine liegen nicht zufaellig auf einem dritten Freitag - beide
+    Ereignis-Arten muessen unabhaengig nebeneinander erscheinen koennen,
+    ohne sich zu ueberschreiben."""
+    today = datetime.date(2026, 10, 14)  # CPI (14.10., heute) UND Options-Verfall (16.10.) beide im 3-Tage-Fenster
+    events = get_upcoming_macro_events(today, window_trading_days=3)
+    names = {e.name for e in events}
+    assert "CPI" in names
+    assert "Optionsverfall (monatlich)" in names

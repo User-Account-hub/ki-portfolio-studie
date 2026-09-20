@@ -285,6 +285,20 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   gleichzeitig, damit es nicht übersehen werden kann. Für ein strukturiertes
   Produkt, dessen Basiswert weiterhin gehandelt wird, greift das NICHT (der
   bereits bestehende, gewollte Preis-Proxy-Mechanismus bleibt unverändert).
+- **Options-Verfallstage im Event-Kalender (2026-09-21,
+  `event_calendar.third_friday_of_month`/`_upcoming_third_fridays`):**
+  ergänzt den bestehenden FOMC-/CPI-Hinweis um den dritten Freitag jedes
+  Monats ("Hexensabbat"/Options-Quartalsverfall in März/Juni/September/
+  Dezember - gleichzeitiger Verfall von Index-Futures, Index-Optionen UND
+  Aktienoptionen, die stärkste Ausprägung; regulärer, monatlicher
+  Aktienoptionsverfall in den übrigen acht Monaten). Anders als
+  `FOMC_DECISION_DATES`/`CPI_RELEASE_DATES` (hardcodiert, jährlich von Hand
+  nachzupflegen) ist das eine feste Kalenderregel und wird BERECHNET, nicht
+  recherchiert - muss also nie aktualisiert werden. Rein informativ wie der
+  übrige Event-Kalender: das Anlage-Universum handelt selbst keine
+  Optionen, der Hinweis dokumentiert nur die historisch erhöhte Volatilität
+  der zugrundeliegenden Aktien/ETFs an diesen Tagen - kein Guardrail, keine
+  automatische Reaktion.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig
