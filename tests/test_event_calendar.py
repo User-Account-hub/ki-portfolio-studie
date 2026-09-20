@@ -14,6 +14,7 @@ from src.event_calendar import (
     CPI_RELEASE_DATES,
     FOMC_DECISION_DATES,
     QUARTERLY_WITCHING_MONTHS,
+    SECTOR_EVENT_DATES,
     EarningsWarning,
     MacroEvent,
     _upcoming_third_fridays,
@@ -271,3 +272,44 @@ def test_get_upcoming_macro_events_does_not_duplicate_fomc_or_cpi_with_expiratio
     names = {e.name for e in events}
     assert "CPI" in names
     assert "Optionsverfall (monatlich)" in names
+
+
+# --- SECTOR_EVENT_DATES / branchenspezifische Grossveranstaltungen (2026-09-21) ---
+
+
+def test_sector_event_dates_are_hardcoded_and_nonempty():
+    """Regressionsschutz: die hardcodierte Liste muss tatsaechlich befuellt
+    sein und die vom Nutzer geforderten Kategorien (Halbleiter-Konferenzen,
+    Krypto-Mining-Events) abdecken."""
+    assert len(SECTOR_EVENT_DATES) >= 3
+    names = [name for name, _ in SECTOR_EVENT_DATES]
+    assert all(isinstance(event_date, datetime.date) for _, event_date in SECTOR_EVENT_DATES)
+    assert any("CES" in name for name in names)
+    assert any("GTC" in name for name in names)
+    assert any("Mining" in name for name in names)
+
+
+def test_get_upcoming_macro_events_flags_sector_event_within_window():
+    # NVIDIA GTC 2026 am 2026-03-16 (Montag) - 2 Handelstage vorher: 2026-03-12 (Donnerstag)
+    today = datetime.date(2026, 3, 13)  # Freitag, 1 Handelstag vor dem Event
+    events = get_upcoming_macro_events(today, window_trading_days=3)
+    assert MacroEvent(
+        name="NVIDIA GTC 2026", event_date=datetime.date(2026, 3, 16), trading_days_until=1
+    ) in events
+
+
+def test_get_upcoming_macro_events_ignores_sector_event_outside_window():
+    # CES 2026 (06.01.) liegt weit ausserhalb eines 3-Tage-Fensters im September.
+    today = datetime.date(2026, 9, 22)
+    events = get_upcoming_macro_events(today, window_trading_days=3)
+    assert not any(name in {"CES 2026", "NVIDIA GTC 2026", "Mining Disrupt 2026"} for name in {e.name for e in events})
+
+
+def test_get_upcoming_macro_events_sector_event_coexists_with_witching_day():
+    # Mining Disrupt 2026 (21.07., Dienstag) faellt in denselben Monat wie kein
+    # Hexensabbat - hier wird stattdessen geprueft, dass ein Sektor-Termin neben
+    # FOMC/CPI/Options-Events unabhaengig auftaucht, ohne andere zu verdraengen.
+    today = datetime.date(2026, 7, 20)  # Montag, 1 Handelstag vor Mining Disrupt (21.07., Dienstag)
+    events = get_upcoming_macro_events(today, window_trading_days=3)
+    names = {e.name for e in events}
+    assert "Mining Disrupt 2026" in names

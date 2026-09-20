@@ -1,5 +1,6 @@
 """Event-Kalender-Hinweis: bevorstehende Quartalsberichte (yfinance),
-hardcodierte Makro-Termine (FOMC/CPI) und Options-Verfallstage (2026-09-21)
+hardcodierte Makro-Termine (FOMC/CPI), Options-Verfallstage (2026-09-21) und
+branchenspezifische Grossveranstaltungen (SECTOR_EVENT_DATES, 2026-09-21)
 als zusätzlicher Kontext für Claude.
 
 Rein informativ - KEIN Guardrail, KEIN automatisches Verbot. Ein erhöhtes
@@ -65,6 +66,25 @@ CPI_RELEASE_DATES: list[datetime.date] = [
     datetime.date(2026, 12, 10),
 ]
 
+# Kap. 6.14 Erweiterung (2026-09-21): kleine, hardcodierte Liste
+# branchenspezifischer wiederkehrender Termine - ausgewaehlt nach Relevanz
+# fuer das stark AI-/Halbleiter-/Krypto-Mining-lastige Anlage-Universum
+# (Kap. 6.7): CES und NVIDIA GTC decken die grossen Halbleiter-/AI-
+# Ankuendigungstermine ab (u.a. NVDA, AMD, AVGO, ARM, MRVL, TSM, MU, ASML,
+# SMCI im Universum), Mining Disrupt die Krypto-Mining-Titel (u.a. RIOT).
+# Anders als die berechnete Options-Verfallsregel oben legt hier jeweils der
+# Veranstalter das Datum jaehrlich neu fest - muss also wie FOMC_DECISION_
+# DATES/CPI_RELEASE_DATES oben jaehrlich von Hand nachgepflegt werden.
+# Je Veranstaltung EIN Datum (analog zu FOMC: der markt-/ankuendigungs-
+# relevanteste einzelne Tag - i.d.R. Eroeffnung/Keynote), nicht der volle
+# mehrtaegige Veranstaltungszeitraum. Quellen (recherchiert 2026-09-21):
+# ces.tech (CES), nvidia.com/gtc (GTC), miningdisrupt.com (Mining Disrupt).
+SECTOR_EVENT_DATES: list[tuple[str, datetime.date]] = [
+    ("CES 2026", datetime.date(2026, 1, 6)),
+    ("NVIDIA GTC 2026", datetime.date(2026, 3, 16)),
+    ("Mining Disrupt 2026", datetime.date(2026, 7, 21)),
+]
+
 # Monate mit gleichzeitigem Verfall von Aktienindex-Futures, Index-Optionen
 # UND Aktienoptionen ("Hexensabbat"/"Triple Witching") - die staerkste der
 # beiden Verfallsauspraegungen unten. Anders als FOMC_DECISION_DATES/
@@ -95,7 +115,8 @@ class EarningsWarning:
 
 @dataclass(frozen=True)
 class MacroEvent:
-    name: str  # "FOMC" | "CPI" | "Hexensabbat (Options-Quartalsverfall)" | "Optionsverfall (monatlich)"
+    name: str  # "FOMC" | "CPI" | ein Eintrag aus SECTOR_EVENT_DATES (z.B. "CES 2026") |
+    # "Hexensabbat (Options-Quartalsverfall)" | "Optionsverfall (monatlich)"
     event_date: datetime.date
     trading_days_until: int
 
@@ -200,8 +221,8 @@ def get_upcoming_macro_events(
     window_trading_days: int = DEFAULT_EVENT_WINDOW_TRADING_DAYS,
 ) -> list[MacroEvent]:
     """Portfolioweiter Hinweis (nicht symbolspezifisch) - siehe
-    FOMC_DECISION_DATES/CPI_RELEASE_DATES sowie (2026-09-21)
-    _upcoming_third_fridays/third_friday_of_month für die Options-
+    FOMC_DECISION_DATES/CPI_RELEASE_DATES, SECTOR_EVENT_DATES (2026-09-21)
+    sowie _upcoming_third_fridays/third_friday_of_month für die Options-
     Verfallstage."""
     events = []
     for name, dates in (("FOMC", FOMC_DECISION_DATES), ("CPI", CPI_RELEASE_DATES)):
@@ -210,6 +231,11 @@ def get_upcoming_macro_events(
                 events.append(
                     MacroEvent(name=name, event_date=event_date, trading_days_until=trading_days_until(today, event_date))
                 )
+    for name, event_date in SECTOR_EVENT_DATES:
+        if _is_within_window(event_date, today, window_trading_days):
+            events.append(
+                MacroEvent(name=name, event_date=event_date, trading_days_until=trading_days_until(today, event_date))
+            )
     for name, expiration in _upcoming_third_fridays(today):
         if _is_within_window(expiration, today, window_trading_days):
             events.append(

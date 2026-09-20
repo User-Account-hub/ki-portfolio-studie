@@ -299,6 +299,20 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   Optionen, der Hinweis dokumentiert nur die historisch erhöhte Volatilität
   der zugrundeliegenden Aktien/ETFs an diesen Tagen - kein Guardrail, keine
   automatische Reaktion.
+- **Branchenspezifische Grossveranstaltungen im Event-Kalender (2026-09-21,
+  `event_calendar.SECTOR_EVENT_DATES`):** kleine, hardcodierte Liste
+  wiederkehrender Termine, ausgewählt nach Relevanz für das stark AI-/
+  Halbleiter-/Krypto-Mining-lastige Anlage-Universum (Kap. 6.7): CES und
+  NVIDIA GTC decken die grossen Halbleiter-/AI-Ankündigungstermine ab (u.a.
+  NVDA, AMD, AVGO, ARM, MRVL, TSM, MU, ASML, SMCI im Universum), Mining
+  Disrupt die Krypto-Mining-Titel (u.a. RIOT). Je Veranstaltung EIN Datum
+  (der markt-/ankündigungsrelevanteste einzelne Tag, i.d.R. Eröffnung/
+  Keynote), nicht der volle mehrtägige Zeitraum. Anders als die berechnete
+  Options-Verfallsregel oben legt hier der jeweilige Veranstalter das Datum
+  jährlich neu fest - muss also wie `FOMC_DECISION_DATES`/
+  `CPI_RELEASE_DATES` jährlich von Hand nachgepflegt werden. Rein
+  informativ wie der übrige Event-Kalender: kein Guardrail, keine
+  automatische Reaktion.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig
