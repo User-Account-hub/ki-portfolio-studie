@@ -30,7 +30,9 @@ import pytest
 from src.metrics import (
     DEFAULT_RISK_FREE_RATE_ANNUAL,
     PHASE2_PERIODS_PER_YEAR,
+    SECONDARY_BENCHMARK_SYMBOL,
     NavHistory,
+    _normalize_symbol_to_initial_cash,
     _replay_ledger,
     compute_metrics,
 )
@@ -43,6 +45,7 @@ def make_nav_history(
     initial_nav: float | None = None,
     historical_peak_nav: float | None = None,
     benchmark_normalized: list[float] | None = None,
+    qqq_normalized: list[float] | None = None,
     baseline_normalized: list[float] | None = None,
 ) -> NavHistory:
     if dates is None:
@@ -52,6 +55,8 @@ def make_nav_history(
         nav=nav_values,
         # Default = nav_values (Benchmark irrelevant fuer die meisten Tests hier).
         benchmark_normalized=benchmark_normalized if benchmark_normalized is not None else nav_values,
+        # Default = nav_values (QQQ-Vergleich irrelevant fuer die meisten Tests hier).
+        qqq_normalized=qqq_normalized if qqq_normalized is not None else nav_values,
         # Default = nav_values (Momentum-Baseline irrelevant fuer die meisten Tests hier).
         baseline_normalized=baseline_normalized if baseline_normalized is not None else nav_values,
         periods_per_year=periods_per_year,
@@ -407,6 +412,105 @@ def test_compute_metrics_information_ratio_uses_phase2_annualization_once_enough
     expected_tracking_error = float(phase2_active_returns.std() * np.sqrt(PHASE2_PERIODS_PER_YEAR))
     expected_information_ratio = result.alpha_pct / expected_tracking_error
     assert result.information_ratio == pytest.approx(expected_information_ratio)
+
+
+# --- QQQ-Vergleichsindex (Kap. 6.9 Erweiterung, 2026-09-21) -------------------
+
+
+def test_secondary_benchmark_symbol_is_qqq():
+    """Dokumentiert die bewusste, feste Wahl (siehe Modul-Kommentar) - kein
+    frei konfigurierbarer Wert wie benchmark_symbol."""
+    assert SECONDARY_BENCHMARK_SYMBOL == "QQQ"
+
+
+def test_normalize_symbol_to_initial_cash_basic():
+    prices = {"2026-01-05": 100.0, "2026-01-06": 110.0, "2026-01-07": 90.0}
+
+    def price_on(symbol, when):
+        return prices.get(when.strftime("%Y-%m-%d"))
+
+    dates = [pd.Timestamp(d) for d in prices]
+    result = _normalize_symbol_to_initial_cash(price_on, "QQQ", dates[0], dates, initial_cash=1_000.0)
+    assert result == [pytest.approx(1_000.0), pytest.approx(1_100.0), pytest.approx(900.0)]
+
+
+def test_normalize_symbol_to_initial_cash_falls_back_when_start_price_missing():
+    def price_on(symbol, when):
+        return None  # Symbol nicht aufloesbar
+
+    dates = [pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-06")]
+    result = _normalize_symbol_to_initial_cash(price_on, "QQQ", dates[0], dates, initial_cash=1_000.0)
+    assert result == [1_000.0, 1_000.0]
+
+
+def test_normalize_symbol_to_initial_cash_falls_back_for_missing_individual_date():
+    def price_on(symbol, when):
+        if when == pd.Timestamp("2026-01-05"):
+            return 100.0
+        return None  # Luecke an diesem einen Datum
+
+    dates = [pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-06")]
+    result = _normalize_symbol_to_initial_cash(price_on, "QQQ", dates[0], dates, initial_cash=1_000.0)
+    assert result == [pytest.approx(1_000.0), 1_000.0]
+
+
+def test_compute_metrics_qqq_fields_computed_like_benchmark():
+    """qqq_total_return_pct/alpha_vs_qqq_pct muessen dieselbe initial_nav-
+    Ankerung wie benchmark_total_return_pct/alpha_pct verwenden (siehe
+    Kommentar in compute_metrics)."""
+    nav_history = make_nav_history(
+        nav_values=[100_000, 105_000],
+        periods_per_year=252,
+        qqq_normalized=[100_000, 112_000],
+    )
+    result = compute_metrics(nav_history)
+    assert result.qqq_total_return_pct == pytest.approx(0.12)
+    assert result.alpha_vs_qqq_pct == pytest.approx(result.total_return_pct - 0.12)
+
+
+def test_compute_metrics_qqq_alpha_negative_when_qqq_outperforms():
+    nav_history = make_nav_history(
+        nav_values=[100_000, 104_000],
+        periods_per_year=252,
+        qqq_normalized=[100_000, 115_000],
+    )
+    result = compute_metrics(nav_history)
+    assert result.alpha_vs_qqq_pct < 0
+
+
+def test_compute_metrics_qqq_independent_of_primary_benchmark():
+    """QQQ ERGAENZT SPY, ist aber davon unabhaengig - unterschiedliche
+    Kursverlaeufe fuer benchmark_normalized vs. qqq_normalized duerfen sich
+    nicht gegenseitig beeinflussen."""
+    nav_history = make_nav_history(
+        nav_values=[100_000, 100_000],
+        periods_per_year=252,
+        benchmark_normalized=[100_000, 105_000],
+        qqq_normalized=[100_000, 120_000],
+    )
+    result = compute_metrics(nav_history)
+    assert result.benchmark_total_return_pct == pytest.approx(0.05)
+    assert result.qqq_total_return_pct == pytest.approx(0.20)
+    assert result.alpha_pct == pytest.approx(-0.05)
+    assert result.alpha_vs_qqq_pct == pytest.approx(-0.20)
+
+
+def test_reconstruct_nav_history_no_trades_includes_flat_qqq_line():
+    """Der fruehe 'keine Trades'-Rueckgabepfad muss ebenfalls
+    qqq_normalized befuellen, nicht nur benchmark_normalized/
+    baseline_normalized (sonst crasht die NavHistory-Konstruktion)."""
+    import sqlite3
+
+    from src.metrics import reconstruct_nav_history
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE nav_history (id INTEGER PRIMARY KEY, portfolio_id INTEGER, recorded_at TEXT, nav REAL)"
+    )
+    portfolio_row = {"id": 1, "initial_cash_balance": 100_000.0}
+    result = reconstruct_nav_history(conn, portfolio_row, trades=[], watchlist_underlyings={}, benchmark_symbol="SPY")
+    assert result.qqq_normalized == [100_000.0]
 
 
 def test_compute_metrics_falls_back_to_phase1_annualization_before_regime_change():

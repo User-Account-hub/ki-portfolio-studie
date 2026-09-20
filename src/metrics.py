@@ -73,12 +73,29 @@ PHASE2_PERIODS_PER_YEAR = 252.0
 # Fallback fuer direkte/Test-Aufrufe ohne expliziten Wert.
 DEFAULT_RISK_FREE_RATE_ANNUAL = 0.04
 
+# Kap. 6.9 Erweiterung (2026-09-21): zweiter, sektorspezifischer Vergleichs-
+# index ZUSAETZLICH zum konfigurierbaren Haupt-Benchmark (`benchmark_symbol`,
+# aktuell SPY, siehe reconstruct_nav_history) - bewusst fest kodiert statt
+# ueber Config/Env aenderbar (analog zu den hardcodierten FOMC-/CPI-Terminen
+# in event_calendar.py oder der festen News-Feed-Liste in news_feed.py): es
+# geht hier nicht um einen frei waehlbaren Vergleichsmassstab, sondern
+# spezifisch um den in Kap. 6.9 der Thesis geforderten sektorbreiten
+# Tech-Index. Das Anlage-Universum (Kap. 6.7) ist stark AI-/Halbleiter-lastig
+# - ein reiner S&P-500-Vergleich (SPY) allein unterrepraesentiert das; QQQ
+# ergaenzt SPY, ersetzt es nicht.
+SECONDARY_BENCHMARK_SYMBOL = "QQQ"
+
 
 @dataclass(frozen=True)
 class NavHistory:
     dates: list[pd.Timestamp]
     nav: list[float]
     benchmark_normalized: list[float]
+    # Zweiter, fest kodierter Vergleichsindex (SECONDARY_BENCHMARK_SYMBOL =
+    # "QQQ", Kap. 6.9 Erweiterung 2026-09-21) - ZUSAETZLICH zu
+    # benchmark_normalized, ersetzt es nicht. Dieselbe Normalisierungs-/
+    # Ankerlogik wie benchmark_normalized (siehe _normalize_symbol).
+    qqq_normalized: list[float]
     # Regelbasierte Momentum-Baseline (Thesis Kap. 6.9, nicht-KI-Vergleichsarm):
     # Top-Quintil 12-Wochen-Performance aus dem Aktien-Universum, gleichgewichtet,
     # monatlich rebalanciert - aus Kursdaten rekonstruiert wie benchmark_normalized,
@@ -126,6 +143,12 @@ class MetricsResult:
     # (zu wenig Perioden oder Portfolio bewegt sich exakt wie die Benchmark -
     # std() == 0 -> Division durch Null wird vermieden statt +-inf zu liefern).
     information_ratio: float | None
+    # Zweiter, sektorspezifischer Vergleichsindex (Kap. 6.9 Erweiterung,
+    # 2026-09-21, SECONDARY_BENCHMARK_SYMBOL = "QQQ") - ZUSAETZLICH zu
+    # benchmark_total_return_pct/alpha_pct oben, ersetzt sie nicht. Dieselbe
+    # initial_nav-Ankerung wie beim Haupt-Benchmark (siehe compute_metrics).
+    qqq_total_return_pct: float
+    alpha_vs_qqq_pct: float
 
 
 def _replay_ledger(trades: list[sqlite3.Row], initial_cash: float) -> list[dict]:
@@ -187,6 +210,30 @@ def _price_lookup_symbols(snapshots: list[dict], watchlist_underlyings: dict[str
 MOMENTUM_BASELINE_LOOKBACK_WEEKS = 12
 
 
+def _normalize_symbol_to_initial_cash(
+    price_on, symbol: str, start: pd.Timestamp, dates: list[pd.Timestamp], initial_cash: float
+) -> list[float]:
+    """Normalisiert `symbol`s Kursverlauf auf `initial_cash` am echten
+    Studienbeginn (`start`) - dieselbe Anker-/Fallback-Logik, die vorher nur
+    für den Haupt-Benchmark inline in reconstruct_nav_history stand (siehe
+    dortigen Bugfix-Kommentar 2026-09-12 Teil 3: IMMER gegen `initial_nav`
+    ankern, nie gegen den ersten lokalen Checkpoint) - seit der QQQ-
+    Erweiterung (Kap. 6.9, 2026-09-21) für zwei Symbole gebraucht, daher
+    hier als gemeinsame Funktion extrahiert statt ein zweites Mal zu
+    duplizieren. Fehlt der Kurs (Symbol nicht auflösbar/kein Datenpunkt),
+    fällt der jeweilige Tag auf eine flache Linie bei `initial_cash` zurück,
+    statt NaN zu produzieren."""
+    start_price = price_on(symbol, start)
+    normalized = []
+    for d in dates:
+        price = price_on(symbol, d)
+        if price is None or start_price is None:
+            normalized.append(initial_cash)
+        else:
+            normalized.append(initial_cash * (price / start_price))
+    return normalized
+
+
 def reconstruct_nav_history(
     conn: sqlite3.Connection,
     portfolio_row: sqlite3.Row,
@@ -227,6 +274,7 @@ def reconstruct_nav_history(
             dates=[pd.Timestamp.today()],
             nav=[initial_cash],
             benchmark_normalized=[initial_cash],
+            qqq_normalized=[initial_cash],
             baseline_normalized=[initial_cash],
             periods_per_year=periods_per_year,
             initial_nav=initial_cash,
@@ -251,7 +299,7 @@ def reconstruct_nav_history(
 
     price_symbols = sorted(
         set(_price_lookup_symbols(snapshots, watchlist_underlyings))
-        | {benchmark_symbol}
+        | {benchmark_symbol, SECONDARY_BENCHMARK_SYMBOL}
         | set(momentum_universe_symbols)
     )
     # Der Momentum-Baseline-Rebalance am allerersten Termin (`start`) braucht
@@ -300,14 +348,13 @@ def reconstruct_nav_history(
     # das Vergleichsfenster fuer die Benchmark von Lauf zu Lauf verschiebt -
     # und seit dem total_return-Fix (Teil 1) waeren total_return und
     # benchmark_total_return sonst inkonsistent geankert, was alpha_pct verzerrt.
-    benchmark_start_price = price_on(benchmark_symbol, start)
-    benchmark_normalized = []
-    for d in dates:
-        price = price_on(benchmark_symbol, d)
-        if price is None or benchmark_start_price is None:
-            benchmark_normalized.append(initial_cash)
-        else:
-            benchmark_normalized.append(initial_cash * (price / benchmark_start_price))
+    benchmark_normalized = _normalize_symbol_to_initial_cash(price_on, benchmark_symbol, start, dates, initial_cash)
+    # Kap. 6.9 Erweiterung (2026-09-21): zweiter, sektorspezifischer
+    # Vergleichsindex (SECONDARY_BENCHMARK_SYMBOL = "QQQ") - dieselbe
+    # Anker-/Fallback-Logik wie oben, ZUSAETZLICH zu benchmark_normalized.
+    qqq_normalized = _normalize_symbol_to_initial_cash(
+        price_on, SECONDARY_BENCHMARK_SYMBOL, start, dates, initial_cash
+    )
 
     # Kap. 6.9: regelbasierte Momentum-Baseline, rein aus Kursdaten
     # rekonstruiert (kein separat gehandeltes Portfolio) - no-op (flache Linie
@@ -325,6 +372,7 @@ def reconstruct_nav_history(
         dates=dates,
         nav=nav_values,
         benchmark_normalized=benchmark_normalized,
+        qqq_normalized=qqq_normalized,
         baseline_normalized=baseline_normalized,
         periods_per_year=periods_per_year,
         initial_nav=initial_cash,
@@ -422,6 +470,13 @@ def compute_metrics(
     # aussagekraeftig).
     benchmark_total_return = float(benchmark.iloc[-1] / nav_history.initial_nav - 1)
 
+    # Kap. 6.9 Erweiterung (2026-09-21): qqq_total_return_pct/alpha_vs_qqq_pct
+    # sind architektonisch identisch zu benchmark_total_return_pct/alpha_pct
+    # oben (dieselbe initial_nav-Ankerung) - zweiter, sektorspezifischer
+    # Vergleichsindex ZUSAETZLICH zum Haupt-Benchmark, nicht als Ersatz.
+    qqq = pd.Series(nav_history.qqq_normalized, index=nav_history.dates)
+    qqq_total_return = float(qqq.iloc[-1] / nav_history.initial_nav - 1)
+
     # Kap. 6.9: baseline_total_return/baseline_alpha_pct sind architektonisch
     # identisch zu benchmark_total_return/alpha_pct - selbe initial_nav-
     # Ankerung (Details siehe Bugfix-Kommentar oben), nur gegen die
@@ -450,4 +505,6 @@ def compute_metrics(
         baseline_total_return_pct=baseline_total_return,
         baseline_alpha_pct=float(total_return - baseline_total_return),
         information_ratio=information_ratio,
+        qqq_total_return_pct=qqq_total_return,
+        alpha_vs_qqq_pct=float(total_return - qqq_total_return),
     )

@@ -226,6 +226,18 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   `None`, wenn kein Tracking Error berechenbar ist (zu wenig Perioden, oder
   Portfolio bewegt sich exakt wie die Benchmark - Standardabweichung 0,
   keine Division durch Null).
+- **Zweiter Vergleichsindex QQQ (Kap. 6.9 Erweiterung, 2026-09-21,
+  `metrics.SECONDARY_BENCHMARK_SYMBOL`, `MetricsResult.qqq_total_return_pct`/
+  `alpha_vs_qqq_pct`):** ergänzt den bestehenden, konfigurierbaren Haupt-
+  Benchmark (`benchmark_symbol`, aktuell SPY) um einen fest kodierten,
+  sektorspezifischen Nasdaq-100-Vergleich - ERSETZT SPY nicht, beide Zeilen
+  stehen nebeneinander im Report. Bewusst hart kodiert statt konfigurierbar
+  (analog zu den News-Feeds/FOMC-CPI-Terminen): das Anlage-Universum
+  (Kap. 6.7) ist stark AI-/Halbleiter-lastig, ein reiner S&P-500-Vergleich
+  allein unterrepräsentiert das. Dieselbe `initial_nav`-Ankerung und
+  Fallback-Logik wie beim Haupt-Benchmark (`_normalize_symbol_to_initial_cash`
+  in `metrics.py`, aus der ursprünglich benchmark-spezifischen Inline-Logik
+  extrahiert, da jetzt für zwei Symbole gebraucht).
 - **`nav_history`-Tabelle (5. Tabelle, seit Kap.-6.8-Guardrails):** eng
   zweckgebunden - pro Pipeline-Lauf genau ein Eintrag mit dem NAV zu
   Lauf-Beginn. Einziger Zweck: `risk_guardrails.check_circuit_breaker` einen

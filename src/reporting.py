@@ -57,6 +57,8 @@ def generate_report(
     lines.append(f"| Max. Drawdown | {metrics.max_drawdown_pct:.2%} |")
     lines.append(f"| Benchmark-Rendite ({portfolio_row['benchmark_symbol']}) | {metrics.benchmark_total_return_pct:.2%} |")
     lines.append(f"| Alpha vs. Benchmark | {metrics.alpha_pct:.2%} |")
+    lines.append(f"| Benchmark-Rendite (QQQ, Nasdaq-100, sektorspezifisch) | {metrics.qqq_total_return_pct:.2%} |")
+    lines.append(f"| Alpha vs. QQQ | {metrics.alpha_vs_qqq_pct:.2%} |")
     if metrics.information_ratio is not None:
         lines.append(f"| Information Ratio (Alpha / Tracking Error) | {metrics.information_ratio:.2f} |")
     lines.append(f"| Momentum-Baseline-Rendite (Kap. 6.9) | {metrics.baseline_total_return_pct:.2%} |")

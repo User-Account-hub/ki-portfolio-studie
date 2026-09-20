@@ -39,6 +39,8 @@ def make_metrics(**overrides) -> MetricsResult:
         baseline_total_return_pct=0.0,
         baseline_alpha_pct=0.0,
         information_ratio=None,
+        qqq_total_return_pct=0.0,
+        alpha_vs_qqq_pct=0.0,
     )
     defaults.update(overrides)
     return MetricsResult(**defaults)
@@ -140,16 +142,48 @@ def test_report_omits_information_ratio_row_when_not_computable():
 
 
 def test_report_shows_information_ratio_next_to_alpha():
+    """'Neben' der Benchmark-Zeilen = innerhalb desselben Kennzahlen-Blocks,
+    direkt nach Alpha vs. QQQ (siehe test_report_shows_qqq_benchmark_rows für
+    die Reihenfolge Benchmark -> Alpha vs. Benchmark -> QQQ -> Alpha vs. QQQ
+    -> Information Ratio)."""
     content = _generate(deep_reflection=None, metrics=make_metrics(alpha_pct=0.05, information_ratio=0.42))
     lines = content.splitlines()
-    alpha_index = next(i for i, line in enumerate(lines) if line.startswith("| Alpha vs. Benchmark"))
-    assert "0.42" in lines[alpha_index + 1]
-    assert "Information Ratio" in lines[alpha_index + 1]
+    alpha_qqq_index = next(i for i, line in enumerate(lines) if line.startswith("| Alpha vs. QQQ"))
+    assert "0.42" in lines[alpha_qqq_index + 1]
+    assert "Information Ratio" in lines[alpha_qqq_index + 1]
 
 
 def test_report_formats_negative_information_ratio():
     content = _generate(deep_reflection=None, metrics=make_metrics(information_ratio=-1.23))
     assert "| Information Ratio (Alpha / Tracking Error) | -1.23 |" in content
+
+
+# --- QQQ-Vergleichsindex (Kap. 6.9 Erweiterung, 2026-09-21) -------------------
+
+
+def test_report_shows_qqq_benchmark_rows_alongside_spy():
+    """Kernanforderung: QQQ ERGAENZT die bestehende SPY-Benchmark-Zeile,
+    ersetzt sie nicht - beide muessen gleichzeitig im Report stehen."""
+    content = _generate(
+        deep_reflection=None,
+        metrics=make_metrics(
+            benchmark_total_return_pct=0.08, alpha_pct=0.02,
+            qqq_total_return_pct=0.11, alpha_vs_qqq_pct=-0.01,
+        ),
+    )
+    assert "| Benchmark-Rendite (SPY) | 8.00% |" in content
+    assert "| Alpha vs. Benchmark | 2.00% |" in content
+    assert "| Benchmark-Rendite (QQQ, Nasdaq-100, sektorspezifisch) | 11.00% |" in content
+    assert "| Alpha vs. QQQ | -1.00% |" in content
+
+
+def test_report_qqq_rows_always_shown_not_conditional():
+    """Anders als Information Ratio (optional, kann None sein) sind die
+    QQQ-Kennzahlen Pflichtfelder auf MetricsResult - die Zeilen muessen
+    immer erscheinen, nicht nur bei einem bestimmten Wert."""
+    content = _generate(deep_reflection=None, metrics=make_metrics())
+    assert "Benchmark-Rendite (QQQ" in content
+    assert "Alpha vs. QQQ" in content
 
 
 # --- Randbedingungen (Kap. 7) -----------------------------------------------
