@@ -41,6 +41,8 @@ def make_metrics(**overrides) -> MetricsResult:
         information_ratio=None,
         qqq_total_return_pct=0.0,
         alpha_vs_qqq_pct=0.0,
+        segment_basket_total_return_pct=0.0,
+        alpha_vs_segment_basket_pct=0.0,
     )
     defaults.update(overrides)
     return MetricsResult(**defaults)
@@ -184,6 +186,36 @@ def test_report_qqq_rows_always_shown_not_conditional():
     content = _generate(deep_reflection=None, metrics=make_metrics())
     assert "Benchmark-Rendite (QQQ" in content
     assert "Alpha vs. QQQ" in content
+
+
+# --- Segment-ETF-Korb (Kap. 6.9 Erweiterung, 2026-09-21) ----------------------
+
+
+def test_report_shows_segment_basket_row_alongside_other_comparators():
+    """Kernanforderung: der Segment-Korb ERGAENZT die bestehenden
+    Vergleichspunkte (SPY, QQQ, Momentum-Baseline), ersetzt sie nicht - alle
+    muessen gleichzeitig im Report stehen."""
+    content = _generate(
+        deep_reflection=None,
+        metrics=make_metrics(
+            benchmark_total_return_pct=0.08, alpha_pct=0.02,
+            qqq_total_return_pct=0.11, alpha_vs_qqq_pct=-0.01,
+            baseline_total_return_pct=0.09, baseline_alpha_pct=0.01,
+            segment_basket_total_return_pct=0.15, alpha_vs_segment_basket_pct=-0.05,
+        ),
+    )
+    assert "| Benchmark-Rendite (SPY) | 8.00% |" in content
+    assert "| Benchmark-Rendite (QQQ, Nasdaq-100, sektorspezifisch) | 11.00% |" in content
+    assert "| Momentum-Baseline-Rendite (Kap. 6.9) | 9.00% |" in content
+    assert "Segment-ETF-Korb-Rendite (SMH/URA/ICLN" in content
+    assert "| 15.00% |" in content
+    assert "| Alpha vs. Segment-ETF-Korb | -5.00% |" in content
+
+
+def test_report_segment_basket_rows_always_shown_not_conditional():
+    content = _generate(deep_reflection=None, metrics=make_metrics())
+    assert "Segment-ETF-Korb-Rendite" in content
+    assert "Alpha vs. Segment-ETF-Korb" in content
 
 
 # --- Randbedingungen (Kap. 7) -----------------------------------------------

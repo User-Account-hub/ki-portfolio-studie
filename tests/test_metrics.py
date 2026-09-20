@@ -47,6 +47,7 @@ def make_nav_history(
     benchmark_normalized: list[float] | None = None,
     qqq_normalized: list[float] | None = None,
     baseline_normalized: list[float] | None = None,
+    segment_basket_normalized: list[float] | None = None,
 ) -> NavHistory:
     if dates is None:
         dates = list(pd.date_range("2026-01-05", periods=len(nav_values), freq="D"))
@@ -59,6 +60,8 @@ def make_nav_history(
         qqq_normalized=qqq_normalized if qqq_normalized is not None else nav_values,
         # Default = nav_values (Momentum-Baseline irrelevant fuer die meisten Tests hier).
         baseline_normalized=baseline_normalized if baseline_normalized is not None else nav_values,
+        # Default = nav_values (Segment-ETF-Korb irrelevant fuer die meisten Tests hier).
+        segment_basket_normalized=segment_basket_normalized if segment_basket_normalized is not None else nav_values,
         periods_per_year=periods_per_year,
         # Default = nav_values[0]: die meisten Tests hier pruefen Annualisierung/
         # Phasenlogik, nicht total_return, und sollen sich nicht aendern, wenn
@@ -511,6 +514,71 @@ def test_reconstruct_nav_history_no_trades_includes_flat_qqq_line():
     portfolio_row = {"id": 1, "initial_cash_balance": 100_000.0}
     result = reconstruct_nav_history(conn, portfolio_row, trades=[], watchlist_underlyings={}, benchmark_symbol="SPY")
     assert result.qqq_normalized == [100_000.0]
+
+
+# --- Segment-ETF-Korb (Kap. 6.9 Erweiterung, 2026-09-21) ----------------------
+
+
+def test_compute_metrics_segment_basket_fields_computed_like_baseline():
+    """segment_basket_total_return_pct/alpha_vs_segment_basket_pct muessen
+    dieselbe initial_nav-Ankerung wie baseline_total_return_pct/
+    baseline_alpha_pct verwenden (siehe Kommentar in compute_metrics)."""
+    nav_history = make_nav_history(
+        nav_values=[100_000, 105_000],
+        periods_per_year=252,
+        segment_basket_normalized=[100_000, 118_000],
+    )
+    result = compute_metrics(nav_history)
+    assert result.segment_basket_total_return_pct == pytest.approx(0.18)
+    assert result.alpha_vs_segment_basket_pct == pytest.approx(result.total_return_pct - 0.18)
+
+
+def test_compute_metrics_segment_basket_alpha_negative_when_basket_outperforms():
+    nav_history = make_nav_history(
+        nav_values=[100_000, 104_000],
+        periods_per_year=252,
+        segment_basket_normalized=[100_000, 130_000],
+    )
+    result = compute_metrics(nav_history)
+    assert result.alpha_vs_segment_basket_pct < 0
+
+
+def test_compute_metrics_segment_basket_independent_of_other_comparators():
+    """Der Segment-Korb ERGAENZT SPY/QQQ/Momentum-Baseline, ist aber davon
+    unabhaengig - unterschiedliche Kursverlaeufe duerfen sich nicht
+    gegenseitig beeinflussen."""
+    nav_history = make_nav_history(
+        nav_values=[100_000, 100_000],
+        periods_per_year=252,
+        benchmark_normalized=[100_000, 105_000],
+        qqq_normalized=[100_000, 120_000],
+        baseline_normalized=[100_000, 108_000],
+        segment_basket_normalized=[100_000, 130_000],
+    )
+    result = compute_metrics(nav_history)
+    assert result.benchmark_total_return_pct == pytest.approx(0.05)
+    assert result.qqq_total_return_pct == pytest.approx(0.20)
+    assert result.baseline_total_return_pct == pytest.approx(0.08)
+    assert result.segment_basket_total_return_pct == pytest.approx(0.30)
+    assert result.alpha_vs_segment_basket_pct == pytest.approx(-0.30)
+
+
+def test_reconstruct_nav_history_no_trades_includes_flat_segment_basket_line():
+    """Der fruehe 'keine Trades'-Rueckgabepfad muss ebenfalls
+    segment_basket_normalized befuellen (sonst crasht die
+    NavHistory-Konstruktion)."""
+    import sqlite3
+
+    from src.metrics import reconstruct_nav_history
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE nav_history (id INTEGER PRIMARY KEY, portfolio_id INTEGER, recorded_at TEXT, nav REAL)"
+    )
+    portfolio_row = {"id": 1, "initial_cash_balance": 100_000.0}
+    result = reconstruct_nav_history(conn, portfolio_row, trades=[], watchlist_underlyings={}, benchmark_symbol="SPY")
+    assert result.segment_basket_normalized == [100_000.0]
 
 
 def test_compute_metrics_falls_back_to_phase1_annualization_before_regime_change():

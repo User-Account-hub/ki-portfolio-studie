@@ -49,6 +49,7 @@ import yfinance as yf
 from src.db import get_peak_nav
 from src.momentum_baseline import reconstruct_momentum_baseline
 from src.risk_guardrails import OpenPosition, compute_nav
+from src.segment_basket import SEGMENT_BASKET_SYMBOLS, reconstruct_segment_basket
 
 CASH_SIGN = {"buy": -1, "sell": 1, "short": 1, "cover": -1}
 OPEN_SIDES = {"buy": "long", "short": "short"}
@@ -101,6 +102,12 @@ class NavHistory:
     # monatlich rebalanciert - aus Kursdaten rekonstruiert wie benchmark_normalized,
     # kein separat gehandeltes Portfolio. Siehe src/momentum_baseline.py.
     baseline_normalized: list[float]
+    # Thematischer Segment-ETF-Korb (Thesis Kap. 6.9 Erweiterung, 2026-09-21,
+    # SEGMENT_BASKET_SYMBOLS = SMH/URA/ICLN, siehe src/segment_basket.py) -
+    # rein informativer Vergleichspunkt wie baseline_normalized, analog dazu
+    # berechnet (gleichgewichtet, monatlich rebalanciert), nur OHNE
+    # Auswahl/Rangliste (immer alle drei fest kodierten Symbole).
+    segment_basket_normalized: list[float]
     # Checkpoints/Jahr, abgeleitet aus den `freqs` von reconstruct_nav_history -
     # treibt die Annualisierung in compute_metrics (Volatilitaet, Sharpe).
     periods_per_year: float
@@ -149,6 +156,13 @@ class MetricsResult:
     # initial_nav-Ankerung wie beim Haupt-Benchmark (siehe compute_metrics).
     qqq_total_return_pct: float
     alpha_vs_qqq_pct: float
+    # Thematischer Segment-ETF-Korb (Kap. 6.9 Erweiterung, 2026-09-21,
+    # SEGMENT_BASKET_SYMBOLS = SMH/URA/ICLN, siehe src/segment_basket.py) -
+    # architektonisch identisch zu baseline_total_return_pct/baseline_alpha_pct
+    # (dieselbe initial_nav-Ankerung), nur gegen den Segment-Korb statt der
+    # Momentum-Baseline.
+    segment_basket_total_return_pct: float
+    alpha_vs_segment_basket_pct: float
 
 
 def _replay_ledger(trades: list[sqlite3.Row], initial_cash: float) -> list[dict]:
@@ -276,6 +290,7 @@ def reconstruct_nav_history(
             benchmark_normalized=[initial_cash],
             qqq_normalized=[initial_cash],
             baseline_normalized=[initial_cash],
+            segment_basket_normalized=[initial_cash],
             periods_per_year=periods_per_year,
             initial_nav=initial_cash,
             historical_peak_nav=historical_peak_nav,
@@ -300,6 +315,7 @@ def reconstruct_nav_history(
     price_symbols = sorted(
         set(_price_lookup_symbols(snapshots, watchlist_underlyings))
         | {benchmark_symbol, SECONDARY_BENCHMARK_SYMBOL}
+        | set(SEGMENT_BASKET_SYMBOLS)
         | set(momentum_universe_symbols)
     )
     # Der Momentum-Baseline-Rebalance am allerersten Termin (`start`) braucht
@@ -368,12 +384,24 @@ def reconstruct_nav_history(
         lookback_weeks=MOMENTUM_BASELINE_LOOKBACK_WEEKS,
     ) if momentum_universe_symbols else [initial_cash] * len(dates)
 
+    # Kap. 6.9 Erweiterung (2026-09-21): thematischer Segment-ETF-Korb
+    # (SMH/URA/ICLN, siehe src/segment_basket.py) - analog zur Momentum-
+    # Baseline oben berechnet, aber IMMER aktiv (feste Symbole, kein
+    # optionales Universum wie bei der Momentum-Baseline).
+    segment_basket_normalized = reconstruct_segment_basket(
+        price_on=price_on,
+        dates=dates,
+        start=start,
+        initial_cash=initial_cash,
+    )
+
     return NavHistory(
         dates=dates,
         nav=nav_values,
         benchmark_normalized=benchmark_normalized,
         qqq_normalized=qqq_normalized,
         baseline_normalized=baseline_normalized,
+        segment_basket_normalized=segment_basket_normalized,
         periods_per_year=periods_per_year,
         initial_nav=initial_cash,
         historical_peak_nav=historical_peak_nav,
@@ -484,6 +512,14 @@ def compute_metrics(
     baseline = pd.Series(nav_history.baseline_normalized, index=nav_history.dates)
     baseline_total_return = float(baseline.iloc[-1] / nav_history.initial_nav - 1)
 
+    # Kap. 6.9 Erweiterung (2026-09-21): segment_basket_total_return_pct/
+    # alpha_vs_segment_basket_pct sind architektonisch identisch zu
+    # baseline_total_return_pct/baseline_alpha_pct oben (dieselbe
+    # initial_nav-Ankerung), nur gegen den thematischen Segment-ETF-Korb
+    # (SMH/URA/ICLN) statt der Momentum-Baseline.
+    segment_basket = pd.Series(nav_history.segment_basket_normalized, index=nav_history.dates)
+    segment_basket_total_return = float(segment_basket.iloc[-1] / nav_history.initial_nav - 1)
+
     alpha_pct = float(total_return - benchmark_total_return)
     # Information Ratio = Alpha / Tracking Error. Nutzt bewusst denselben
     # alpha_pct wie die Report-Zeile "Alpha vs. Benchmark" (kumulierte
@@ -507,4 +543,6 @@ def compute_metrics(
         information_ratio=information_ratio,
         qqq_total_return_pct=qqq_total_return,
         alpha_vs_qqq_pct=float(total_return - qqq_total_return),
+        segment_basket_total_return_pct=segment_basket_total_return,
+        alpha_vs_segment_basket_pct=float(total_return - segment_basket_total_return),
     )

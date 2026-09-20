@@ -62,7 +62,12 @@ def generate_report(
     if metrics.information_ratio is not None:
         lines.append(f"| Information Ratio (Alpha / Tracking Error) | {metrics.information_ratio:.2f} |")
     lines.append(f"| Momentum-Baseline-Rendite (Kap. 6.9) | {metrics.baseline_total_return_pct:.2%} |")
-    lines.append(f"| Alpha vs. Momentum-Baseline | {metrics.baseline_alpha_pct:.2%} |\n")
+    lines.append(f"| Alpha vs. Momentum-Baseline | {metrics.baseline_alpha_pct:.2%} |")
+    lines.append(
+        f"| Segment-ETF-Korb-Rendite (SMH/URA/ICLN, thematische Referenz, Kap. 6.9) | "
+        f"{metrics.segment_basket_total_return_pct:.2%} |"
+    )
+    lines.append(f"| Alpha vs. Segment-ETF-Korb | {metrics.alpha_vs_segment_basket_pct:.2%} |\n")
 
     lines.append("## Datenqualität")
     if data_quality_report.has_findings:

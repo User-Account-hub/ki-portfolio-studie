@@ -238,6 +238,18 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   Fallback-Logik wie beim Haupt-Benchmark (`_normalize_symbol_to_initial_cash`
   in `metrics.py`, aus der ursprünglich benchmark-spezifischen Inline-Logik
   extrahiert, da jetzt für zwei Symbole gebraucht).
+- **Thematischer Segment-ETF-Korb (Kap. 6.9 Erweiterung, 2026-09-21,
+  `src/segment_basket.py`, `SEGMENT_BASKET_SYMBOLS`,
+  `MetricsResult.segment_basket_total_return_pct`/
+  `alpha_vs_segment_basket_pct`):** ein weiterer, rein informativer
+  Vergleichspunkt zusätzlich zu SPY/QQQ/Momentum-Baseline - gleichgewichtetes,
+  monatlich rebalanciertes Portfolio aus SMH (Halbleiter), URA (Uran) und
+  ICLN (Clean Energy), fest kodiert (dieselbe Begründung wie bei QQQ oben:
+  eine thematische Referenz für das Anlage-Universum, kein frei wählbarer
+  Massstab). Architektonisch identisch zur Momentum-Baseline
+  (`src/momentum_baseline.py`) berechnet - reine Kursdaten-Rekonstruktion,
+  kein separat gehandeltes Portfolio - nur OHNE deren Auswahl/Rangliste
+  (immer alle drei Symbole, immer gleichgewichtet statt "Top-Quintil").
 - **`nav_history`-Tabelle (5. Tabelle, seit Kap.-6.8-Guardrails):** eng
   zweckgebunden - pro Pipeline-Lauf genau ein Eintrag mit dem NAV zu
   Lauf-Beginn. Einziger Zweck: `risk_guardrails.check_circuit_breaker` einen
