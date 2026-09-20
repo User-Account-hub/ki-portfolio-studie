@@ -64,16 +64,21 @@ def _run_data_quality_checks(
     tradable_symbols: list[str],
     structured_product_symbols: set[str],
     yfinance_prices: dict[str, float],
+    open_position_rows: list,
 ) -> data_quality.DataQualityReport:
     """Datenqualitäts-Check (2026-09-17): (1) Kursvergleich yfinance vs.
     Alpaca (Stichprobe), (2) Lücken-/Ausreisser-Erkennung in den yfinance-
-    Kurshistorien - siehe src/data_quality.py für die eigentliche Logik.
+    Kurshistorien, (3) offene Positionen ohne aktuellen Kurs (2026-09-21,
+    z.B. Delisting/Übernahme) - siehe src/data_quality.py für die
+    eigentliche Logik.
 
     Bewusst so gebaut, dass WEDER ein gefundenes Datenqualitätsproblem NOCH
     ein Fehler dieses Checks selbst (z.B. Alpaca-Marktdaten-Endpunkt down)
     den Pipeline-Lauf abbricht - ein Datenqualitätsproblem ist ein
     Beobachtungssignal für Log/Report, kein Grund, einen ansonsten gültigen
-    Lauf zu verwerfen.
+    Lauf zu verwerfen. Gilt ausdrücklich auch für (3): siehe data_quality.
+    detect_stale_open_positions' Docstring, warum das bewusst KEINE
+    automatische Order auslöst.
     """
     sample_symbols = data_quality.select_price_comparison_sample(
         [s for s in tradable_symbols if s in yfinance_prices]
@@ -95,7 +100,7 @@ def _run_data_quality_checks(
     except Exception:
         log.exception("Kurshistorien-Abruf (Datenqualität) fehlgeschlagen - wird übersprungen.")
 
-    return data_quality.build_report(yfinance_prices, alpaca_prices, price_histories)
+    return data_quality.build_report(yfinance_prices, alpaca_prices, price_histories, open_position_rows)
 
 
 def _compute_volatility_scaling(
@@ -580,10 +585,21 @@ def run(force: bool | None = None) -> None:
         log.info("Führe Datenqualitäts-Checks durch (yfinance vs. Alpaca, Lücken/Ausreisser)...")
         tradable_symbols = [s for s in price_lookup_symbols if s not in structured_product_symbols]
         dq_report = _run_data_quality_checks(
-            app_config, tradable_symbols, structured_product_symbols, current_prices
+            app_config, tradable_symbols, structured_product_symbols, current_prices, open_position_rows
         )
         for line in dq_report.log_lines():
             log.warning("Datenqualität: %s", line)
+        # Fehlende Kursdaten fuer eine offene Position (2026-09-21, z.B.
+        # Delisting/Uebernahme) zusaetzlich mit log.error statt nur log.warning -
+        # bewusst prominenter als die uebrigen (rein informativen) Datenqualitaets-
+        # Funde oben, siehe data_quality.detect_stale_open_positions' Docstring
+        # fuer die Begruendung, warum das NIE eine automatische Order ausloest.
+        for stale in dq_report.stale_positions:
+            log.error(
+                "Kursdaten fehlen für offene Position %s (%s, %.4f Stück, Ø-Einstand %.2f) - "
+                "manuelle Prüfung nötig (Delisting/Übernahme?). Keine automatische Order ausgelöst.",
+                stale.symbol, stale.side, stale.quantity, stale.avg_entry_price,
+            )
 
         log.info("Berechne rollierende 60-Tage-Korrelationsmatrix für das Universum...")
         correlation_matrix = _compute_correlation_matrix(watchlist.all_symbols(), structured_product_symbols)

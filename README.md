@@ -272,6 +272,19 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   (yfinance liefert hier keinen). Fehlt das Volumen (Datenausfall), wird
   NICHT blockiert, um einen Datenausfall nicht fälschlich als
   Liquiditätsproblem zu werten.
+- **Fehlende Kursdaten bei offener Position (2026-09-21,
+  `data_quality.detect_stale_open_positions`):** erkennt eine noch offene
+  Position, für die weder ihr eigenes Symbol noch (bei strukturierten
+  Produkten) ihr Basiswert einen aktuellen Kurs liefert - typischerweise ein
+  Delisting oder eine Übernahme. **Löst ausdrücklich KEINE automatische
+  Order aus** (z.B. keine Zwangsschliessung) - zu riskant für einen
+  Automatismus. Stattdessen: `log.error` je betroffener Position, ein
+  eigener, prominenter Report-Abschnitt "⚠️ Kursdaten fehlen - manuelle
+  Prüfung nötig" (analog zu den Stop-Loss-Zwangsschliessungen) UND eine
+  Markierung in der Spalte "Status" der Tabelle "Offene Positionen" - beides
+  gleichzeitig, damit es nicht übersehen werden kann. Für ein strukturiertes
+  Produkt, dessen Basiswert weiterhin gehandelt wird, greift das NICHT (der
+  bereits bestehende, gewollte Preis-Proxy-Mechanismus bleibt unverändert).
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig

@@ -10,10 +10,12 @@ import pytest
 
 from src.data_quality import (
     DataQualityReport,
+    StalePosition,
     build_report,
     compare_source_prices,
     detect_missing_trading_days,
     detect_outlier_moves,
+    detect_stale_open_positions,
     select_price_comparison_sample,
 )
 
@@ -170,6 +172,71 @@ def test_detect_outlier_moves_noop_with_single_data_point():
     assert detect_outlier_moves(histories) == []
 
 
+# --- detect_stale_open_positions (2026-09-21) -------------------------------
+
+
+def make_position(**overrides) -> dict:
+    defaults = dict(
+        symbol="ACME", underlying_symbol=None, instrument_type="equity", side="long",
+        quantity=10.0, avg_entry_price=100.0,
+    )
+    defaults.update(overrides)
+    return defaults
+
+
+def test_detect_stale_open_positions_flags_symbol_with_no_current_price():
+    positions = [make_position(symbol="DELISTED")]
+    stale = detect_stale_open_positions(positions, current_prices={})
+    assert len(stale) == 1
+    assert stale[0] == StalePosition(
+        symbol="DELISTED", instrument_type="equity", side="long", quantity=10.0, avg_entry_price=100.0,
+    )
+
+
+def test_detect_stale_open_positions_not_flagged_when_own_symbol_has_price():
+    positions = [make_position(symbol="AAPL")]
+    assert detect_stale_open_positions(positions, current_prices={"AAPL": 190.0}) == []
+
+
+def test_detect_stale_open_positions_falls_back_to_underlying_symbol():
+    """Ein strukturiertes Produkt, dessen Basiswert weiterhin gehandelt wird,
+    ist NICHT 'stale' - das ist der bestehende, gewollte Proxy-Mechanismus
+    (siehe execution.resolve_price), keine fehlende Kurslage."""
+    positions = [make_position(symbol="MINI-NVDA-LONG-1", underlying_symbol="NVDA", instrument_type="mini_future")]
+    assert detect_stale_open_positions(positions, current_prices={"NVDA": 200.0}) == []
+
+
+def test_detect_stale_open_positions_flagged_when_underlying_also_missing():
+    """Selbst der Basiswert-Fallback findet keinen Kurs - z.B. wenn auch der
+    Basiswert nicht mehr gehandelt wird."""
+    positions = [make_position(symbol="MINI-NVDA-LONG-1", underlying_symbol="NVDA", instrument_type="mini_future")]
+    stale = detect_stale_open_positions(positions, current_prices={})
+    assert len(stale) == 1
+    assert stale[0].symbol == "MINI-NVDA-LONG-1"
+
+
+def test_detect_stale_open_positions_mixed_only_flags_affected():
+    positions = [
+        make_position(symbol="AAPL"),
+        make_position(symbol="DELISTED"),
+        make_position(symbol="MSFT"),
+    ]
+    stale = detect_stale_open_positions(positions, current_prices={"AAPL": 190.0, "MSFT": 410.0})
+    assert [p.symbol for p in stale] == ["DELISTED"]
+
+
+def test_detect_stale_open_positions_empty_when_no_open_positions():
+    assert detect_stale_open_positions([], current_prices={}) == []
+
+
+def test_detect_stale_open_positions_preserves_side_and_quantity():
+    positions = [make_position(symbol="SHORTED", side="short", quantity=25.0, avg_entry_price=42.5)]
+    stale = detect_stale_open_positions(positions, current_prices={})
+    assert stale[0].side == "short"
+    assert stale[0].quantity == 25.0
+    assert stale[0].avg_entry_price == 42.5
+
+
 # --- build_report / DataQualityReport --------------------------------------
 
 
@@ -192,6 +259,25 @@ def test_build_report_has_findings_false_when_clean():
     assert report.has_findings is False
 
 
+def test_build_report_has_findings_false_without_open_positions_argument():
+    """Rueckwaertskompatibilitaet: bestehende Aufrufer, die `open_positions`
+    (noch) nicht kennen, muessen weiterhin gueltige Reports mit leerer
+    stale_positions-Liste erhalten."""
+    report = build_report(yfinance_prices={}, alpaca_prices={}, price_histories={})
+    assert report.stale_positions == []
+
+
+def test_build_report_includes_stale_open_positions():
+    report = build_report(
+        yfinance_prices={"AAPL": 190.0},
+        alpaca_prices={},
+        price_histories={},
+        open_positions=[make_position(symbol="AAPL"), make_position(symbol="DELISTED")],
+    )
+    assert report.has_findings is True
+    assert [p.symbol for p in report.stale_positions] == ["DELISTED"]
+
+
 def test_data_quality_report_log_lines_covers_all_three_categories():
     report = DataQualityReport(
         price_deviations=list(compare_source_prices({"AAPL": 100.0}, {"AAPL": 110.0})),
@@ -210,3 +296,16 @@ def test_data_quality_report_log_lines_covers_all_three_categories():
     assert any("AAPL" in line for line in lines)
     assert any(line.startswith("GAPSYM:") and "fehlende" in line for line in lines)
     assert any(line.startswith("OUTLIER:") and "Tagesbewegung" in line for line in lines)
+
+
+def test_data_quality_report_log_lines_includes_stale_positions():
+    report = DataQualityReport(
+        price_deviations=[],
+        missing_trading_days=[],
+        outlier_moves=[],
+        stale_positions=detect_stale_open_positions([make_position(symbol="DELISTED")], current_prices={}),
+    )
+    lines = report.log_lines()
+    assert len(lines) == 1
+    assert lines[0].startswith("DELISTED:")
+    assert "manuelle Prüfung nötig" in lines[0]

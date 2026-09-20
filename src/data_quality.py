@@ -7,17 +7,23 @@
     Tagesbewegungen über einem unrealistischen Schwellwert (Default ±50%),
     die eher auf einen Datenfehler (Split/Fetch-Glitch) als auf eine echte
     Kursbewegung hindeuten.
+(3) Fehlende Kursdaten für eine noch offene Position (2026-09-21) - z.B.
+    Delisting/Übernahme: siehe detect_stale_open_positions.
 
 Reine Berechnungslogik, kein Netzwerkzugriff - die Werte (yfinance-/Alpaca-
 Preise, Kurshistorien) werden vom Aufrufer (siehe pipeline.py) beschafft und
 hier nur ausgewertet. Auffälligkeiten sind ein Beobachtungssignal für Log/
 Report, KEIN Abbruchgrund - siehe pipeline.py, wo dieser Check bewusst nie
-eine Exception weiterreicht, die den Lauf stoppen würde.
+eine Exception weiterreicht, die den Lauf stoppen würde. Das gilt
+AUSDRÜCKLICH auch für (3): fehlende Kursdaten lösen KEINE automatische Order
+(z.B. eine Zwangsschliessung) aus - zu riskant für einen Automatismus, siehe
+detect_stale_open_positions' Docstring - sondern werden nur klar markiert,
+damit ein Mensch das manuell prüft.
 """
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -48,14 +54,31 @@ class DataQualityIssue:
 
 
 @dataclass(frozen=True)
+class StalePosition:
+    """Eine noch offene Position, für die weder ihr eigenes Symbol noch (bei
+    strukturierten Produkten) ihr Basiswert einen aktuellen Kurs liefert -
+    siehe detect_stale_open_positions."""
+    symbol: str
+    instrument_type: str
+    side: str
+    quantity: float
+    avg_entry_price: float
+
+
+@dataclass(frozen=True)
 class DataQualityReport:
     price_deviations: list[PriceDeviation]
     missing_trading_days: list[DataQualityIssue]
     outlier_moves: list[DataQualityIssue]
+    # 2026-09-21 - siehe detect_stale_open_positions. Default statt Pflichtfeld,
+    # damit bestehende Aufrufer/Tests ohne dieses Argument gueltig bleiben.
+    stale_positions: list[StalePosition] = field(default_factory=list)
 
     @property
     def has_findings(self) -> bool:
-        return bool(self.price_deviations or self.missing_trading_days or self.outlier_moves)
+        return bool(
+            self.price_deviations or self.missing_trading_days or self.outlier_moves or self.stale_positions
+        )
 
     def log_lines(self) -> list[str]:
         """Eine Zeile pro Auffaelligkeit, fuer log.warning je Zeile (siehe
@@ -67,6 +90,11 @@ class DataQualityReport:
         ]
         lines += [f"{issue.symbol}: {issue.detail}" for issue in self.missing_trading_days]
         lines += [f"{issue.symbol}: {issue.detail}" for issue in self.outlier_moves]
+        lines += [
+            f"{p.symbol}: Kursdaten fehlen (offene {p.side}-Position, {p.quantity:.4f} Stück, "
+            f"Ø-Einstand {p.avg_entry_price:.2f}) - manuelle Prüfung nötig (Delisting/Übernahme?)."
+            for p in self.stale_positions
+        ]
         return lines
 
 
@@ -194,10 +222,55 @@ def detect_outlier_moves(
     return issues
 
 
+def detect_stale_open_positions(
+    open_positions,
+    current_prices: dict[str, float],
+) -> list[StalePosition]:
+    """Erkennt eine noch offene Position, für die WEDER ihr eigenes Symbol
+    NOCH (falls vorhanden) ihr Basiswert einen aktuellen Kurs in
+    `current_prices` liefert - typischerweise ein Delisting oder eine
+    Übernahme, bei der yfinance (die alleinige Quelle von `current_prices`,
+    siehe pipeline.py) keine Kurse mehr für das Symbol zurückgibt.
+
+    Dieselbe Fallback-Reihenfolge wie execution.resolve_price/
+    risk_guardrails.compute_nav (eigenes Symbol zuerst, sonst Basiswert bei
+    strukturierten Produkten) - ein Treffer hier bedeutet also: selbst diese
+    bestehenden Fallbacks würden keinen Kurs finden. Für ein strukturiertes
+    Produkt, dessen Basiswert weiterhin gehandelt wird, wird NICHTS
+    gemeldet (das ist der bereits bestehende, gewollte Proxy-Mechanismus,
+    keine fehlende Kurslage).
+
+    AUSDRÜCKLICH KEINE automatische Order (z.B. eine Zwangsschliessung) -
+    zu riskant für einen Automatismus (siehe Modul-Docstring). Nur eine
+    klare Markierung für Log (DataQualityReport.log_lines) und Report
+    (reporting.py), damit ein Mensch das manuell prüft.
+
+    `open_positions` sind sqlite3.Row-artige Objekte mit den Spalten
+    `symbol`, `underlying_symbol`, `instrument_type`, `side`, `quantity`,
+    `avg_entry_price` (siehe db.get_open_positions)."""
+    stale = []
+    for p in open_positions:
+        symbol = p["symbol"]
+        underlying = p["underlying_symbol"]
+        has_price = symbol in current_prices or (underlying and underlying in current_prices)
+        if not has_price:
+            stale.append(
+                StalePosition(
+                    symbol=symbol,
+                    instrument_type=p["instrument_type"],
+                    side=p["side"],
+                    quantity=p["quantity"],
+                    avg_entry_price=p["avg_entry_price"],
+                )
+            )
+    return stale
+
+
 def build_report(
     yfinance_prices: dict[str, float],
     alpaca_prices: dict[str, float],
     price_histories: dict[str, pd.Series],
+    open_positions=None,
     price_deviation_threshold: float = DEFAULT_PRICE_DEVIATION_THRESHOLD,
     outlier_move_threshold: float = DEFAULT_OUTLIER_MOVE_THRESHOLD,
     min_reference_coverage: float = DEFAULT_MIN_REFERENCE_COVERAGE,
@@ -206,4 +279,5 @@ def build_report(
         price_deviations=compare_source_prices(yfinance_prices, alpaca_prices, price_deviation_threshold),
         missing_trading_days=detect_missing_trading_days(price_histories, min_reference_coverage),
         outlier_moves=detect_outlier_moves(price_histories, outlier_move_threshold),
+        stale_positions=detect_stale_open_positions(open_positions or [], yfinance_prices),
     )

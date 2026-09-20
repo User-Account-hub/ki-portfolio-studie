@@ -90,6 +90,12 @@ def generate_report(
             for issue in data_quality_report.outlier_moves:
                 lines.append(f"- **{issue.symbol}**: {issue.detail}")
             lines.append("")
+        if data_quality_report.stale_positions:
+            lines.append(
+                f"**Fehlende Kursdaten für {len(data_quality_report.stale_positions)} offene Position(en)** - "
+                "siehe eigener Abschnitt \"⚠️ Kursdaten fehlen - manuelle Prüfung nötig\" unten."
+            )
+            lines.append("")
     else:
         lines.append("_Keine Auffälligkeiten._")
     lines.append("")
@@ -214,15 +220,38 @@ def generate_report(
             lines.append(f"- **{action.symbol}**: {action.documentation}")
         lines.append("")
 
+    # Fehlende Kursdaten fuer eine offene Position (2026-09-21, z.B. Delisting/
+    # Uebernahme) - siehe data_quality.detect_stale_open_positions. Bewusst ein
+    # eigener, prominenter Abschnitt (analog zu den Stop-Loss-Schliessungen
+    # oben), NICHT nur ein Eintrag im allgemeinen "Datenqualität"-Abschnitt
+    # weiter unten - zusaetzlich unten in der Positionstabelle markiert, damit
+    # es nicht uebersehen werden kann. AUSDRUECKLICH keine automatische Order.
+    stale_symbols = {p.symbol for p in data_quality_report.stale_positions}
+    if data_quality_report.stale_positions:
+        lines.append("## ⚠️ Kursdaten fehlen - manuelle Prüfung nötig")
+        lines.append(
+            "Für die folgenden offenen Positionen liefert weder das Symbol selbst noch (bei "
+            "strukturierten Produkten) sein Basiswert einen aktuellen Kurs - möglicher Hinweis auf "
+            "Delisting oder Übernahme. Es wurde bewusst KEINE automatische Order ausgelöst (zu riskant "
+            "für einen Automatismus) - bitte manuell prüfen."
+        )
+        for p in data_quality_report.stale_positions:
+            lines.append(
+                f"- **{p.symbol}** ({p.instrument_type}, {p.side}): {p.quantity:.4f} Stück, "
+                f"Ø-Einstand {p.avg_entry_price:.2f}"
+            )
+        lines.append("")
+
     lines.append("## Offene Positionen")
     if open_positions:
-        lines.append("| Symbol | Typ | Seite | Menge | Ø Einstand | Stop-Loss |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| Symbol | Typ | Seite | Menge | Ø Einstand | Stop-Loss | Status |")
+        lines.append("|---|---|---|---|---|---|---|")
         for p in open_positions:
             stop = f"{p['stop_loss_price']:.2f}" if p["stop_loss_price"] else "-"
+            status = "⚠️ Kursdaten fehlen - manuelle Prüfung nötig" if p["symbol"] in stale_symbols else "-"
             lines.append(
                 f"| {p['symbol']} | {p['instrument_type']} | {p['side']} | {p['quantity']:.4f} | "
-                f"{p['avg_entry_price']:.2f} | {stop} |"
+                f"{p['avg_entry_price']:.2f} | {stop} | {status} |"
             )
     else:
         lines.append("_Keine offenen Positionen._")

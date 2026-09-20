@@ -12,7 +12,7 @@ import pandas as pd
 
 from src.boundary_conditions import BoundaryConditionCheck
 from src.correlation import CorrelationWarning
-from src.data_quality import DataQualityReport
+from src.data_quality import DataQualityReport, StalePosition
 from src.event_calendar import EarningsWarning, MacroEvent
 from src.deep_reflection_schema import DeepReflectionOutput, DeepReflectionRunResult, SelfConsistencyCheckResult
 from src.execution import ExecutedOrderResult
@@ -57,12 +57,16 @@ def _generate(
     earnings_warnings=None,
     macro_events=None,
     metrics=None,
+    open_positions=None,
+    data_quality_report=None,
 ) -> str:
     portfolio_row = {"name": "test", "currency": "USD", "benchmark_symbol": "SPY"}
     metrics = metrics if metrics is not None else make_metrics()
+    data_quality_report = data_quality_report if data_quality_report is not None else EMPTY_DQ_REPORT
     with tempfile.TemporaryDirectory() as tmp_dir:
         report_path = generate_report(
-            portfolio_row, [], executed_results or [], [], "", metrics, EMPTY_DQ_REPORT, deep_reflection,
+            portfolio_row, open_positions or [], executed_results or [], [], "", metrics, data_quality_report,
+            deep_reflection,
             triggered_boundary_conditions or [], still_open_boundary_conditions or [], correlation_cluster_count,
             earnings_warnings or [], macro_events or [],
             tmp_dir,
@@ -403,3 +407,81 @@ def test_report_shows_earnings_and_macro_events():
 def test_report_event_calendar_section_mentions_no_veto():
     content = _generate(deep_reflection=None)
     assert "kein Verbot" in content or "KEIN automatisches Verbot" in content
+
+
+# --- Fehlende Kursdaten / offene Positionen (Kap. 12.7-Nachbarthema, 2026-09-21) ---
+
+
+def make_open_position_row(**overrides) -> dict:
+    defaults = dict(
+        symbol="ACME", instrument_type="equity", side="long", quantity=10.0,
+        avg_entry_price=100.0, stop_loss_price=None,
+    )
+    defaults.update(overrides)
+    return defaults
+
+
+def test_report_omits_stale_positions_section_when_none():
+    content = _generate(deep_reflection=None)
+    assert "Kursdaten fehlen - manuelle Prüfung nötig" not in content
+
+
+def test_report_shows_stale_positions_section_when_present():
+    dq_report = DataQualityReport(
+        price_deviations=[], missing_trading_days=[], outlier_moves=[],
+        stale_positions=[
+            StalePosition(symbol="DELISTED", instrument_type="equity", side="long", quantity=10.0, avg_entry_price=50.0)
+        ],
+    )
+    content = _generate(deep_reflection=None, data_quality_report=dq_report)
+    assert "## ⚠️ Kursdaten fehlen - manuelle Prüfung nötig" in content
+    assert "**DELISTED**" in content
+    assert "Ø-Einstand 50.00" in content
+
+
+def test_report_mentions_no_automatic_order_for_stale_positions():
+    """Kernaussage des Auftrags: der Report muss explizit klarstellen, dass
+    KEINE automatische Order ausgelöst wurde."""
+    dq_report = DataQualityReport(
+        price_deviations=[], missing_trading_days=[], outlier_moves=[],
+        stale_positions=[
+            StalePosition(symbol="DELISTED", instrument_type="equity", side="long", quantity=10.0, avg_entry_price=50.0)
+        ],
+    )
+    content = _generate(deep_reflection=None, data_quality_report=dq_report)
+    assert "KEINE automatische Order" in content
+
+
+def test_report_marks_affected_row_in_open_positions_table():
+    dq_report = DataQualityReport(
+        price_deviations=[], missing_trading_days=[], outlier_moves=[],
+        stale_positions=[
+            StalePosition(symbol="DELISTED", instrument_type="equity", side="long", quantity=10.0, avg_entry_price=50.0)
+        ],
+    )
+    positions = [make_open_position_row(symbol="AAPL"), make_open_position_row(symbol="DELISTED")]
+    content = _generate(deep_reflection=None, open_positions=positions, data_quality_report=dq_report)
+    table_lines = {
+        line.split("|")[1].strip(): line
+        for line in content.splitlines()
+        if line.startswith("| ") and "Symbol" not in line and "---" not in line
+    }
+    assert "⚠️ Kursdaten fehlen - manuelle Prüfung nötig" not in table_lines["AAPL"]  # unbetroffen
+    assert "⚠️ Kursdaten fehlen - manuelle Prüfung nötig" in table_lines["DELISTED"]
+
+
+def test_report_datenqualitaet_section_cross_references_stale_positions():
+    """Die allgemeine 'Datenqualität'-Sektion darf bei ausschliesslich
+    fehlenden Kursdaten nicht faelschlich leer erscheinen (has_findings=True,
+    aber keiner der drei alten Unterabschnitte greift) - sie muss auf den
+    eigenen, prominenteren Abschnitt verweisen."""
+    dq_report = DataQualityReport(
+        price_deviations=[], missing_trading_days=[], outlier_moves=[],
+        stale_positions=[
+            StalePosition(symbol="DELISTED", instrument_type="equity", side="long", quantity=10.0, avg_entry_price=50.0)
+        ],
+    )
+    content = _generate(deep_reflection=None, data_quality_report=dq_report)
+    section = content.split("## Datenqualität")[1].split("## ")[0]
+    assert "1 offene Position(en)" in section
+    assert "_Keine Auffälligkeiten._" not in section
