@@ -107,10 +107,11 @@ die Aggregation an einem Tag fehlschlägt.
 - Die tatsächliche Durchsetzung aller Risikolimiten (Positionsgrössen, Tagesverlust-Stop, \
 strukturierte-Produkte-Obergrenze, Short-Stop-Loss, max. 1 Trade/Symbol/Tag, max. \
 Segmentgewichtung, korrelierte Krypto/Mining-Exposure, Micro-Cap-Sublimit, \
-Top-3-Konzentration, Mindest-Cash-Quote, Drawdown-Circuit-Breaker für Hebelpositionen) \
-erfolgt serverseitig nach deiner Antwort - Vorschläge ausserhalb der Limiten werden \
-automatisch abgelehnt und nicht ausgeführt. Halte dich trotzdem an die unten genannten \
-Limiten (inkl. "segment"/"cap_tier" je Titel im Universum), um unnötige Ablehnungen zu \
+Top-3-Konzentration, Mindest-Cash-Quote, Drawdown-Circuit-Breaker für Hebelpositionen, \
+Liquiditätslimit relativ zum Tagesvolumen) erfolgt serverseitig nach deiner Antwort - \
+Vorschläge ausserhalb der Limiten werden automatisch abgelehnt und nicht ausgeführt. \
+Halte dich trotzdem an die unten genannten Limiten (inkl. "segment"/"cap_tier" je Titel \
+im Universum und "volume" je Titel im Marktdaten-Kontext), um unnötige Ablehnungen zu \
 vermeiden.
 - Antworte AUSSCHLIESSLICH mit einem einzigen validen JSON-Objekt, ohne Markdown-Fences, \
 ohne Fliesstext davor oder danach.
@@ -204,6 +205,9 @@ def build_user_prompt(
             "sma20": snap.sma20,
             "sma50": snap.sma50,
             "volatility_20d_annualized": snap.volatility_20d_annualized,
+            # Kap. 6.13 Liquiditätslimit (2026-09-21) - zuletzt bekanntes
+            # Tagesvolumen, siehe risk_guardrails.check_liquidity_limit.
+            "volume": snap.volume,
         }
         for symbol, snap in snapshots.items()
     }
@@ -231,6 +235,9 @@ def build_user_prompt(
         "drawdown_tier1_position_size_factor": risk_config.drawdown_tier1_position_size_factor,
         "drawdown_tier2_pct": risk_config.drawdown_tier2_pct,
         "drawdown_tier2_position_size_factor": risk_config.drawdown_tier2_position_size_factor,
+        # Kap. 6.13 (2026-09-21, siehe risk_guardrails.check_liquidity_limit) -
+        # max. Anteil der Order-Menge am Tagesvolumen ("volume" je Titel oben).
+        "max_order_pct_of_avg_daily_volume": risk_config.max_order_pct_of_avg_daily_volume,
     }
 
     payload = {

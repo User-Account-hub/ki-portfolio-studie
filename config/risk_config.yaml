@@ -127,3 +127,18 @@ volatility_scaling_min_factor: 0.5
 # Obergrenze des Skalierungsfaktors (stark unterdurchschnittlich volatile
 # Titel werden nie staerker als auf diesen Faktor vergroessert).
 volatility_scaling_max_factor: 1.5
+
+# --- Liquiditätslimit (Kap. 6.13, 2026-09-21) ---
+# Eine einzelne Order (buy/short) darf nicht mehr als diesen Anteil des
+# zuletzt bekannten Tagesvolumens des Titels ausmachen (siehe
+# risk_guardrails.check_liquidity_limit) - schützt vor einem Ausführungs-/
+# Slippage-Risiko, das die NAV-basierten Positionsgrössen-Limiten oben nicht
+# abdecken: eine vom NAV her erlaubte Positionsgrösse kann das tatsächliche
+# Handelsvolumen eines dünn gehandelten Titels trotzdem übersteigen.
+# Nutzt MarketSnapshot.volume (data_fetch.py) - das ist das zuletzt bekannte
+# EINZELTAGES-Volumen, KEIN echter mehrtägiger gleitender Durchschnitt
+# (yfinance liefert hier keinen); dokumentierte Vereinfachung, für dieses
+# grobe Ausführungsrisiko-Signal aber ausreichend. Fehlt das Volumen (z.B.
+# Datenausfall), wird NICHT blockiert - ein Datenausfall soll nicht
+# fälschlich als Liquiditätsproblem gewertet werden.
+max_order_pct_of_avg_daily_volume: 0.10

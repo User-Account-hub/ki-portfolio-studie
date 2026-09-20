@@ -446,6 +446,47 @@ def check_min_cash_quota(
     return RiskCheckResult.ok()
 
 
+def check_liquidity_limit(
+    order: ProposedOrder,
+    price: float,
+    average_daily_volume: float | None,
+    max_pct_of_avg_daily_volume: float,
+) -> RiskCheckResult:
+    """Kap. 6.13: eine Order darf nicht mehr als `max_pct_of_avg_daily_volume`
+    des Tagesvolumens des Titels ausmachen - schützt vor einem Ausführungs-/
+    Slippage-Risiko, das die NAV-basierten Positionsgrössen-Limiten oben
+    NICHT abdecken: eine vom NAV her erlaubte Positionsgrösse (z.B. 10% eines
+    grossen Portfolios) kann das tatsächliche Handelsvolumen eines dünn
+    gehandelten Micro-/Small-Cap-Titels trotzdem weit übersteigen.
+
+    `average_daily_volume` ist MarketSnapshot.volume (data_fetch.py) - das
+    zuletzt bekannte EINZELTAGES-Volumen. Das ist KEIN echter mehrtägiger
+    gleitender Durchschnitt (yfinance liefert hier keinen zusätzlichen Abruf
+    dafür) - eine dokumentierte Vereinfachung, analog zu den anderen
+    Näherungen in diesem Projekt (siehe metrics.py-Modul-Docstring), für
+    dieses grobe Ausführungsrisiko-Signal aber ausreichend.
+
+    Nur für positionsaufbauende Seiten (buy/short) relevant - Sell/Cover
+    reduzieren Exposure und werden wie bei den anderen Guardrails oben nicht
+    beschränkt. Fehlt das Volumen (None oder <= 0, z.B. Datenausfall oder ein
+    frisch gelisteter Titel), wird NICHT blockiert - ein Datenausfall soll
+    nicht fälschlich als Liquiditätsproblem gewertet werden (dieselbe
+    Fallback-Haltung wie z.B. bei current_prices.get in compute_nav)."""
+    if order.side not in (OrderSide.BUY, OrderSide.SHORT):
+        return RiskCheckResult.ok()
+    if average_daily_volume is None or average_daily_volume <= 0:
+        return RiskCheckResult.ok()
+    quantity = order.quantity if order.quantity is not None else order_notional(order, price) / price
+    limit = average_daily_volume * max_pct_of_avg_daily_volume
+    if quantity > limit:
+        return RiskCheckResult.reject(
+            f"Order-Menge für {order.symbol} ({quantity:.2f} Stück) übersteigt das Liquiditätslimit von "
+            f"{max_pct_of_avg_daily_volume:.0%} des Tagesvolumens ({average_daily_volume:.0f} Stück, "
+            f"Limit {limit:.2f})."
+        )
+    return RiskCheckResult.ok()
+
+
 def check_circuit_breaker(
     order: ProposedOrder,
     ctx: PortfolioContext,
@@ -502,6 +543,7 @@ def evaluate_order(
     order_cap_tier: str | None = None,
     universe_symbols: set[str] | None = None,
     order_leveraged: bool = False,
+    average_daily_volume: float | None = None,
 ) -> RiskCheckResult:
     """Runs all applicable guardrail checks for a single proposed order.
 
@@ -520,6 +562,11 @@ def evaluate_order(
     module - execution must not rely on the model honouring that. When None
     (e.g. in unit tests that exercise a single check), the allowlist gate is
     skipped.
+
+    `average_daily_volume` (Kap. 6.13, siehe check_liquidity_limit) ist das
+    zuletzt bekannte Tagesvolumen des Order-Symbols (MarketSnapshot.volume,
+    vom Caller aufgeloest) - None, falls unbekannt, dann greift das
+    Liquiditätslimit nicht (siehe dortige Begründung).
     """
     if universe_symbols and order.symbol not in universe_symbols:
         return RiskCheckResult.reject(
@@ -576,6 +623,7 @@ def evaluate_order(
         check_top3_concentration(order, ctx, price, current_prices, config.max_top3_concentration_pct_of_nav),
         check_min_cash_quota(order, ctx, price, config.min_cash_pct_of_nav),
         check_circuit_breaker(order, ctx, config.circuit_breaker_drawdown_pct, order_leveraged=order_leveraged),
+        check_liquidity_limit(order, price, average_daily_volume, config.max_order_pct_of_avg_daily_volume),
     ]
     result = RiskCheckResult.ok()
     for c in checks:

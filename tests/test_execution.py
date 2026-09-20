@@ -63,6 +63,7 @@ def make_risk_config(**overrides) -> RiskConfig:
         transaction_cost_pct_of_notional=0.001,
         volatility_scaling_min_factor=0.5,
         volatility_scaling_max_factor=1.5,
+        max_order_pct_of_avg_daily_volume=0.10,
         drawdown_tier1_pct=-0.10,
         drawdown_tier1_position_size_factor=0.75,
         drawdown_tier2_pct=-0.15,
@@ -460,6 +461,78 @@ def test_execute_proposed_orders_no_scaling_data_leaves_order_unchanged():
     assert results[0].approved
     assert results[0].volatility_scaling is None
     assert results[0].order.notional == pytest.approx(4_000.0)
+
+
+# --- execute_proposed_orders: Liquiditätslimit (Kap. 6.13, 2026-09-21) -------
+
+
+def test_execute_proposed_orders_rejects_order_exceeding_liquidity_limit():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(max_order_pct_of_avg_daily_volume=0.10)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", quantity=150.0, rationale="test",  # 150 > 10% von 1000
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 10.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        average_daily_volumes={"MINI-NVDA-LONG-1": 1000.0},
+    )
+
+    assert not results[0].approved
+    assert any("Liquiditätslimit" in r for r in results[0].reasons)
+
+
+def test_execute_proposed_orders_approves_order_within_liquidity_limit():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(max_order_pct_of_avg_daily_volume=0.10)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", quantity=50.0, rationale="test",  # 50 < 10% von 1000
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 10.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        average_daily_volumes={"MINI-NVDA-LONG-1": 1000.0},
+    )
+
+    assert results[0].approved
+
+
+def test_execute_proposed_orders_liquidity_limit_noop_without_volume_data():
+    """Kein Eintrag fuer das Symbol in average_daily_volumes (z.B. Datenausfall) -
+    darf nicht faelschlich als Liquiditaetsproblem gewertet werden."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config(max_order_pct_of_avg_daily_volume=0.10)
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", quantity=50.0, rationale="test",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 10.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        average_daily_volumes={},
+    )
+
+    assert results[0].approved
 
 
 # --- execute_proposed_orders: Markt-Phasen-Abgleich (2026-09-20) -------------

@@ -329,6 +329,7 @@ def execute_proposed_orders(
     correlation_matrix: pd.DataFrame | None = None,
     volatility_scaling: dict[str, position_sizing.VolatilityScaling] | None = None,
     market_phases: dict[str, market_phase.MarketPhaseClassification] | None = None,
+    average_daily_volumes: dict[str, float] | None = None,
 ) -> list[ExecutedOrderResult]:
     results: list[ExecutedOrderResult] = []
     risk_check_log = []
@@ -384,6 +385,7 @@ def execute_proposed_orders(
             order_cap_tier=order_meta.cap_tier if order_meta is not None else None,
             universe_symbols=set(symbol_metadata) or None,
             order_leveraged=getattr(order_meta, "leveraged", False) if order_meta is not None else False,
+            average_daily_volume=(average_daily_volumes or {}).get(order.symbol),
         )
         risk_check_log.append({"symbol": order.symbol, "approved": check.approved, "reasons": check.reasons})
 

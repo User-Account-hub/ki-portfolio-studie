@@ -45,6 +45,12 @@ class RiskConfig:
     # und risk_config.yaml fuer die vollstaendige Begruendung.
     volatility_scaling_min_factor: float
     volatility_scaling_max_factor: float
+    # Liquiditaetslimit (Kap. 6.13, 2026-09-21) - max. Anteil einer Order-Menge
+    # am zuletzt bekannten Tagesvolumen des Titels (MarketSnapshot.volume,
+    # siehe risk_guardrails.check_liquidity_limit fuer die vollstaendige
+    # Begruendung und die dokumentierte Einschraenkung, dass das KEIN echter
+    # mehrtaegiger Durchschnitt ist).
+    max_order_pct_of_avg_daily_volume: float
 
     @classmethod
     def from_yaml(cls, path: str) -> "RiskConfig":

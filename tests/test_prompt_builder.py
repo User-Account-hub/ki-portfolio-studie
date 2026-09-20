@@ -9,8 +9,11 @@ import json
 
 import datetime
 
+import pytest
+
 from src.boundary_conditions import BoundaryConditionCheck
 from src.config import RiskConfig, Watchlist, WatchlistSymbol
+from src.data_fetch import MarketSnapshot
 from src.event_calendar import EarningsWarning, MacroEvent
 from src.fundamentals import FundamentalSnapshot
 from src.prompt_builder import (
@@ -44,6 +47,7 @@ def make_risk_config(**overrides) -> RiskConfig:
         transaction_cost_pct_of_notional=0.001,
         volatility_scaling_min_factor=0.5,
         volatility_scaling_max_factor=1.5,
+        max_order_pct_of_avg_daily_volume=0.10,
         drawdown_tier1_pct=-0.10,
         drawdown_tier1_position_size_factor=0.75,
         drawdown_tier2_pct=-0.15,
@@ -292,3 +296,44 @@ def test_system_prompt_mentions_news_context_is_not_exhaustive_or_binding():
     hat (eigene Nennung, nicht nur die bereits bestehende bei fundamentals)."""
     assert "news_context" in SYSTEM_PROMPT
     assert SYSTEM_PROMPT.count("KEIN Ausschlusskriterium") >= 2
+
+
+# --- Liquiditätslimit (Kap. 6.13, 2026-09-21) --------------------------------
+
+
+def test_build_user_prompt_includes_volume_in_market_data():
+    portfolio_row = {"name": "test", "currency": "USD", "cash_balance": 100_000.0, "benchmark_symbol": "SPY"}
+    watchlist = Watchlist(benchmark_symbol="SPY", symbols=[WatchlistSymbol(symbol="AAPL", instrument_type="equity")])
+    snapshots = {
+        "AAPL": MarketSnapshot(
+            symbol="AAPL", last_price=190.0, change_1d_pct=0.01, sma20=185.0, sma50=180.0,
+            volatility_20d_annualized=0.25, volume=45_123_456,
+        )
+    }
+    prompt = build_user_prompt(portfolio_row, [], watchlist, snapshots, make_risk_config())
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["market_data"]["AAPL"]["volume"] == 45_123_456
+
+
+def test_build_user_prompt_market_data_volume_is_none_when_unavailable():
+    portfolio_row = {"name": "test", "currency": "USD", "cash_balance": 100_000.0, "benchmark_symbol": "SPY"}
+    watchlist = Watchlist(benchmark_symbol="SPY", symbols=[WatchlistSymbol(symbol="AAPL", instrument_type="equity")])
+    snapshots = {
+        "AAPL": MarketSnapshot(
+            symbol="AAPL", last_price=190.0, change_1d_pct=0.01, sma20=185.0, sma50=180.0,
+            volatility_20d_annualized=0.25, volume=None,
+        )
+    }
+    prompt = build_user_prompt(portfolio_row, [], watchlist, snapshots, make_risk_config())
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["market_data"]["AAPL"]["volume"] is None
+
+
+def test_build_user_prompt_includes_liquidity_limit_in_risk_limits():
+    prompt = _build_minimal_prompt()
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["risk_limits"]["max_order_pct_of_avg_daily_volume"] == pytest.approx(0.10)
+
+
+def test_system_prompt_mentions_liquidity_limit():
+    assert "Liquiditätslimit" in SYSTEM_PROMPT

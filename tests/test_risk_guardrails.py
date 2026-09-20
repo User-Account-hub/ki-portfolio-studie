@@ -8,6 +8,7 @@ from src.risk_guardrails import (
     check_circuit_breaker,
     check_correlated_segment_exposure,
     check_daily_loss_stop,
+    check_liquidity_limit,
     check_max_trades_per_symbol,
     check_micro_cap_exposure,
     check_min_cash_quota,
@@ -44,6 +45,7 @@ def make_config(**overrides) -> RiskConfig:
         transaction_cost_pct_of_notional=0.001,
         volatility_scaling_min_factor=0.5,
         volatility_scaling_max_factor=1.5,
+        max_order_pct_of_avg_daily_volume=0.10,
         drawdown_tier1_pct=-0.10,
         drawdown_tier1_position_size_factor=0.75,
         drawdown_tier2_pct=-0.15,
@@ -434,6 +436,71 @@ def test_min_cash_quota_ignored_for_short():
     assert result.approved
 
 
+# --- Kap. 6.13: Liquiditätslimit --------------------------------------------------
+
+
+def test_liquidity_limit_within_limit():
+    order = make_order(quantity=90)  # 90 < 10% von 1000 = 100
+    result = check_liquidity_limit(order, price=10.0, average_daily_volume=1000.0, max_pct_of_avg_daily_volume=0.10)
+    assert result.approved
+
+
+def test_liquidity_limit_exceeded():
+    order = make_order(quantity=150)  # 150 > 10% von 1000 = 100
+    result = check_liquidity_limit(order, price=10.0, average_daily_volume=1000.0, max_pct_of_avg_daily_volume=0.10)
+    assert not result.approved
+
+
+def test_liquidity_limit_exact_boundary_is_approved():
+    """Grenzfall: exakt am Limit (nicht darüber) muss noch genehmigt werden -
+    derselbe '>' statt '>='-Vergleich wie bei den übrigen Guardrails
+    (z.B. check_position_size)."""
+    order = make_order(quantity=100)  # exakt 10% von 1000
+    result = check_liquidity_limit(order, price=10.0, average_daily_volume=1000.0, max_pct_of_avg_daily_volume=0.10)
+    assert result.approved
+
+
+def test_liquidity_limit_one_unit_over_boundary_is_rejected():
+    """Grenzfall, andere Seite: eine Einheit über dem Limit muss bereits
+    ablehnen."""
+    order = make_order(quantity=100.0001)
+    result = check_liquidity_limit(order, price=10.0, average_daily_volume=1000.0, max_pct_of_avg_daily_volume=0.10)
+    assert not result.approved
+
+
+def test_liquidity_limit_uses_notional_when_quantity_not_set():
+    order = make_order(quantity=None, notional=1_500.0)  # bei price=10 -> 150 Stueck
+    result = check_liquidity_limit(order, price=10.0, average_daily_volume=1000.0, max_pct_of_avg_daily_volume=0.10)
+    assert not result.approved  # 150 > 100
+
+
+def test_liquidity_limit_ignored_for_sell():
+    """Sell/Cover reduzieren Exposure - wie bei den anderen Guardrails nicht betroffen."""
+    order = make_order(side="sell", quantity=10_000)  # weit ueber jedem Volumen
+    result = check_liquidity_limit(order, price=10.0, average_daily_volume=1000.0, max_pct_of_avg_daily_volume=0.10)
+    assert result.approved
+
+
+def test_liquidity_limit_ignored_for_cover():
+    order = make_order(side="cover", quantity=10_000)
+    result = check_liquidity_limit(order, price=10.0, average_daily_volume=1000.0, max_pct_of_avg_daily_volume=0.10)
+    assert result.approved
+
+
+def test_liquidity_limit_noop_when_volume_unknown():
+    """Fehlendes Volumen (z.B. Datenausfall) darf NICHT blockieren - sonst
+    wuerde ein Datenproblem faelschlich als Liquiditaetsproblem gewertet."""
+    order = make_order(quantity=1_000_000)  # jede Menge waere ohne den Fallback abgelehnt worden
+    result = check_liquidity_limit(order, price=10.0, average_daily_volume=None, max_pct_of_avg_daily_volume=0.10)
+    assert result.approved
+
+
+def test_liquidity_limit_noop_when_volume_zero_or_negative():
+    order = make_order(quantity=1.0)
+    assert check_liquidity_limit(order, price=10.0, average_daily_volume=0.0, max_pct_of_avg_daily_volume=0.10).approved
+    assert check_liquidity_limit(order, price=10.0, average_daily_volume=-5.0, max_pct_of_avg_daily_volume=0.10).approved
+
+
 # --- Kap. 6.8: Portfolio-Circuit-Breaker -----------------------------------------
 
 
@@ -566,6 +633,38 @@ def test_evaluate_order_approves_clean_order():
     order = make_order(side="buy", quantity=1)
     ctx = make_ctx()
     result = evaluate_order(order, ctx, price=150.0, current_prices={}, config=config)
+    assert result.approved
+
+
+def test_evaluate_order_rejects_when_liquidity_limit_exceeded():
+    """Integrationstest: evaluate_order reicht average_daily_volume
+    tatsächlich an check_liquidity_limit durch."""
+    config = make_config(max_order_pct_of_avg_daily_volume=0.10)
+    order = make_order(side="buy", quantity=150)  # > 10% von 1000
+    ctx = make_ctx()
+    result = evaluate_order(order, ctx, price=10.0, current_prices={}, config=config, average_daily_volume=1000.0)
+    assert not result.approved
+    assert "Liquiditätslimit" in result.reasons[0]
+
+
+def test_evaluate_order_approves_when_within_liquidity_limit():
+    config = make_config(max_order_pct_of_avg_daily_volume=0.10)
+    order = make_order(side="buy", quantity=50)  # < 10% von 1000
+    ctx = make_ctx()
+    result = evaluate_order(order, ctx, price=10.0, current_prices={}, config=config, average_daily_volume=1000.0)
+    assert result.approved
+
+
+def test_evaluate_order_liquidity_limit_defaults_to_noop_without_volume():
+    """Ohne uebergebenes average_daily_volume (Default None) darf das
+    Liquiditaetslimit nicht greifen - Rueckwaertskompatibilitaet fuer
+    Aufrufer, die das (noch) nicht kennen. Menge bewusst klein gehalten,
+    damit keine ANDERE (NAV-basierte) Guardrail dazwischenfunkt - dieser
+    Test prueft ausschliesslich das Liquiditaetslimit-Verhalten."""
+    config = make_config(max_order_pct_of_avg_daily_volume=0.10)
+    order = make_order(side="buy", quantity=10)
+    ctx = make_ctx()
+    result = evaluate_order(order, ctx, price=10.0, current_prices={}, config=config)
     assert result.approved
 
 

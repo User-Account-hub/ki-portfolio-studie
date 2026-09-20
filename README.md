@@ -256,6 +256,22 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   echten historischen NAV-Höchststand (`db.get_peak_nav`, `MAX(nav)` über
   alle bisherigen Läufe) liefern, statt einer Näherung aus Startkapital und
   aktuellem Stand. Ersetzt nicht die obige Wochenverlauf-Rekonstruktion.
+- **Liquiditätslimit (Kap. 6.13, 2026-09-21,
+  `risk_guardrails.check_liquidity_limit`,
+  `max_order_pct_of_avg_daily_volume` in `risk_config.yaml`):** ein hartes
+  Guardrail (Ablehnung wie jede andere Kap.-6.8-Verletzung) - eine
+  positionsaufbauende Order (buy/short) darf nicht mehr als einen
+  konfigurierbaren Anteil (Default 10%) des Tagesvolumens des Titels
+  ausmachen. Schützt vor einem Ausführungs-/Slippage-Risiko, das die
+  NAV-basierten Limiten oben nicht abdecken: eine vom NAV her erlaubte
+  Positionsgrösse kann das tatsächliche Handelsvolumen eines dünn
+  gehandelten Micro-/Small-Cap-Titels trotzdem übersteigen. Nutzt
+  `MarketSnapshot.volume` (bereits vorhanden, kein zusätzlicher Datenabruf) -
+  **dokumentierte Einschränkung:** das ist das zuletzt bekannte
+  EINZELTAGES-Volumen, kein echter mehrtägiger gleitender Durchschnitt
+  (yfinance liefert hier keinen). Fehlt das Volumen (Datenausfall), wird
+  NICHT blockiert, um einen Datenausfall nicht fälschlich als
+  Liquiditätsproblem zu werten.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig

@@ -564,6 +564,12 @@ def run(force: bool | None = None) -> None:
             price_lookup_symbols, known_unresolvable_symbols=structured_product_symbols
         )
         current_prices = {s: snap.last_price for s, snap in snapshots.items()}
+        # Kap. 6.13 Liquiditätslimit (2026-09-21, siehe risk_guardrails.
+        # check_liquidity_limit) - nutzt das ohnehin bereits pro Symbol
+        # abgerufene volume-Feld aus `snapshots`, kein zusätzlicher Datenabruf.
+        average_daily_volumes = {
+            s: snap.volume for s, snap in snapshots.items() if snap.volume is not None
+        }
 
         log.info("Berechne volatilitätsadjustierte Positionsgrössen-Skalierung (rollierende 20-Tage-Vol)...")
         volatility_scaling = _compute_volatility_scaling(snapshots, risk_config)
@@ -690,6 +696,7 @@ def run(force: bool | None = None) -> None:
                     correlation_matrix=correlation_matrix,
                     volatility_scaling=volatility_scaling,
                     market_phases=market_phases,
+                    average_daily_volumes=average_daily_volumes,
                 )
             except OrderParsingError as exc:
                 log.error("Konnte Claude-Antwort nicht parsen: %s", exc)
