@@ -42,6 +42,7 @@ from src import (
     fundamentals,
     market_phase,
     metrics,
+    news_feed,
     position_sizing,
     reporting,
 )
@@ -219,6 +220,24 @@ def _check_upcoming_events(
         log.exception("Makro-Termin-Prüfung (FOMC/CPI) fehlgeschlagen - wird übersprungen.")
         macro_events = []
     return earnings_warnings, macro_events
+
+
+def _fetch_news_context() -> str:
+    """Kap. 12.2 (siehe src/news_feed.py für die vollständige Begründung,
+    die Feed-Liste und deren Fest-ab-Studienstart-Charakter) - fester,
+    täglich neu aggregierter Nachrichtentextblock aus den fünf definierten
+    Feeds. Rein informativ (Prompt-Kontext für Claude), kein Guardrail. Kein
+    Abbruch bei einem Fehler dieser Aggregation selbst: liefert dann einen
+    leeren String zurück (kein Kontext diesen Lauf, statt den Lauf zu
+    gefährden) - einzelne fehlgeschlagene Feeds werden bereits innerhalb von
+    news_feed.fetch_all_feeds abgefangen, dieser Try/Except deckt nur einen
+    unerwarteten Fehler in der Aggregation selbst ab."""
+    try:
+        feed_results = news_feed.fetch_all_feeds()
+        return news_feed.build_news_text_block(feed_results)
+    except Exception:
+        log.exception("News-Feed-Aggregation (Kap. 12.2) fehlgeschlagen - wird übersprungen.")
+        return ""
 
 
 def _fetch_universe_fundamentals(universe_symbols: list[str]) -> dict[str, fundamentals.FundamentalSnapshot]:
@@ -502,6 +521,9 @@ def run() -> None:
         log.info("Lade grobe Fundamentaldaten für das Universum (weicher Kontext, kein Filter)...")
         universe_fundamentals = _fetch_universe_fundamentals(watchlist.all_symbols())
 
+        log.info("Aggregiere News-Feed-Textblock (Kap. 12.2, fest ab Studienstart)...")
+        news_text_block = _fetch_news_context()
+
         log.info("Prüfe Randbedingungen (Kap. 7) offener Positionen...")
         triggered_boundary_conditions, still_open_boundary_conditions = _check_boundary_conditions(
             conn, portfolio_row["id"], current_prices
@@ -569,6 +591,7 @@ def run() -> None:
                 earnings_warnings=earnings_warnings,
                 macro_events=macro_events,
                 fundamentals=universe_fundamentals,
+                news_text_block=news_text_block,
             )
 
             log.info("Rufe Claude (%s) für Handelsentscheidung auf...", app_config.claude_model)

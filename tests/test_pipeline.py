@@ -381,3 +381,24 @@ def test_run_proceeds_past_guard_when_no_pilot_phase_positions_remain(tmp_path, 
 
     with pytest.raises(RuntimeError, match="guard_passed"):
         pipeline.run()
+
+
+# --- _fetch_news_context (Kap. 12.2, 2026-09-21) -----------------------------
+
+
+def test_fetch_news_context_delegates_to_news_feed(monkeypatch):
+    monkeypatch.setattr(pipeline.news_feed, "fetch_all_feeds", lambda: "sentinel-results")
+    monkeypatch.setattr(pipeline.news_feed, "build_news_text_block", lambda results: f"block-for-{results}")
+    assert pipeline._fetch_news_context() == "block-for-sentinel-results"
+
+
+def test_fetch_news_context_returns_empty_string_on_unexpected_error(monkeypatch):
+    """Wie bei den anderen weichen Kontext-Quellen (_check_upcoming_events,
+    _fetch_universe_fundamentals): ein Fehler hier darf den Lauf nicht
+    gefaehrden, nur diesen einen Kontext-Baustein fuer den Lauf entfallen
+    lassen."""
+    def _raise():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pipeline.news_feed, "fetch_all_feeds", _raise)
+    assert pipeline._fetch_news_context() == ""

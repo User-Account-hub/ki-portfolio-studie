@@ -125,6 +125,22 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   Cash hinaus" interpretiert (`risk_guardrails.check_no_margin`). Das für
   Shorting technisch nötige Alpaca-Margin-Konto ist davon ausgenommen, da
   Shorting explizit erlaubt ist.
+- **News-Feed-Aggregation (Kap. 12.2, `src/news_feed.py`):** erstmalige
+  Umsetzung eines seit Beginn vorregistrierten, aber nie gebauten Prinzips -
+  eingeführt am 2026-09-21, unmittelbar VOR dem offiziellen Studienstart
+  (kein Regimewechsel während der laufenden Studie, die Pilotphase Kap. 6.3
+  zählt ohnehin nicht zur Auswertung). Fünf feste, am selben Tag live
+  verifizierte RSS-Feeds (CNBC US-Top-News, CNBC Tech, MarketWatch
+  Top-Stories, Fed-Monetary-Policy-Pressemitteilungen, Yahoo-Finance-News) -
+  ab Studienstart **unveränderlich**, siehe Modul-Docstring für die
+  vollständige Begründung inkl. der Feeds, die bewusst NICHT gewählt wurden
+  (kommerzielle News-APIs mit Free-Tiers, die laut AGB keinen produktiven
+  Cron-Lauf erlauben). Pro Feed nur Titel + Datum der letzten 5-8 Einträge
+  (kein Volltext) zu einem festen Textblock aggregiert (Feld `news_context`
+  im Prompt) - rein informativ, kein Ausschlusskriterium, kein Guardrail. Ein
+  einzelner fehlschlagender Feed blockiert die übrigen nicht; eine
+  fehlgeschlagene Aggregation gefährdet den Lauf nicht (liefert dann `null`
+  statt Kontext).
 - **Markt-Phasen-Abgleich (2026-09-20, `src/market_phase.py`,
   `order_schema.CyclePosition`):** Eine automatische, regelbasierte
   Bull/Bear/Seitwärts-Klassifikation je Titel aus SMA20/SMA50 und der

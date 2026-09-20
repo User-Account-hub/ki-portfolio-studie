@@ -99,6 +99,11 @@ Verschuldungsgrad, Free Cashflow - Feld "fundamentals" im JSON-Kontext) - das is
 ergänzende Information für deine eigene Bewertung, KEIN Ausschlusskriterium. Das \
 Universum ist bewusst spekulativ; ein unprofitabler oder hoch verschuldeter Titel \
 bleibt uneingeschränkt handelbar.
+- Feld "news_context" im JSON-Kontext: ein fester, bei jedem Lauf neu aggregierter \
+Textblock aus fünf definierten Nachrichten-Feeds (Titel + Datum der jüngsten Einträge, \
+kein Volltext) - rein ergänzender Kontext, KEIN Ausschlusskriterium und keine Garantie \
+auf Vollständigkeit oder Relevanz für ein bestimmtes Symbol. Kann fehlen (null), wenn \
+die Aggregation an einem Tag fehlschlägt.
 - Die tatsächliche Durchsetzung aller Risikolimiten (Positionsgrössen, Tagesverlust-Stop, \
 strukturierte-Produkte-Obergrenze, Short-Stop-Loss, max. 1 Trade/Symbol/Tag, max. \
 Segmentgewichtung, korrelierte Krypto/Mining-Exposure, Micro-Cap-Sublimit, \
@@ -160,6 +165,7 @@ def build_user_prompt(
     earnings_warnings: list | None = None,
     macro_events: list | None = None,
     fundamentals: dict | None = None,
+    news_text_block: str | None = None,
 ) -> str:
     portfolio_state = {
         "name": portfolio_row["name"],
@@ -276,6 +282,14 @@ def build_user_prompt(
             }
             for symbol, snap in (fundamentals or {}).items()
         },
+        # Kap. 12.2 (2026-09-21, siehe src/news_feed.py fuer die vollstaendige
+        # Begruendung und die - ab Studienstart feste - Feed-Liste): fester,
+        # taeglich neu aggregierter Textblock aus fuenf definierten RSS-Feeds
+        # (Titel + Datum der juengsten Eintraege, kein Volltext). Rein
+        # informativ, KEIN Ausschlusskriterium. None/leer, falls die
+        # Aggregation fehlgeschlagen ist (siehe pipeline._fetch_news_context) -
+        # dann einfach ohne diesen Kontext entscheiden, kein Grund zum Abbruch.
+        "news_context": news_text_block or None,
     }
     return (
         "Aktueller Portfolio-Zustand, Marktdaten und Risikolimiten (JSON):\n\n"

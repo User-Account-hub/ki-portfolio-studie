@@ -105,6 +105,7 @@ def _build_minimal_prompt(
     earnings_warnings=None,
     macro_events=None,
     fundamentals=None,
+    news_text_block=None,
 ):
     portfolio_row = {"name": "test", "currency": "USD", "cash_balance": 100_000.0, "benchmark_symbol": "SPY"}
     watchlist = Watchlist(benchmark_symbol="SPY", symbols=[WatchlistSymbol(symbol="AAPL", instrument_type="equity")])
@@ -116,6 +117,7 @@ def _build_minimal_prompt(
         earnings_warnings=earnings_warnings,
         macro_events=macro_events,
         fundamentals=fundamentals,
+        news_text_block=news_text_block,
     )
 
 
@@ -257,3 +259,36 @@ def test_system_prompt_mentions_fundamentals_are_not_a_filter():
     dass Fundamentaldaten kein Ausschlusskriterium sind."""
     assert "KEIN Ausschlusskriterium" in SYSTEM_PROMPT
     assert "spekulativ" in SYSTEM_PROMPT
+
+
+# --- news_context (Kap. 12.2, 2026-09-21) -------------------------------------
+
+
+def test_build_user_prompt_includes_none_when_no_news_text_block():
+    prompt = _build_minimal_prompt(news_text_block=None)
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["news_context"] is None
+
+
+def test_build_user_prompt_includes_none_when_news_text_block_is_empty_string():
+    """Ein fehlgeschlagener Aggregationslauf liefert '' (siehe
+    pipeline._fetch_news_context) - das muss im Prompt wie "kein Kontext"
+    (null) aussehen, nicht wie ein leerer, aber vorhandener String."""
+    prompt = _build_minimal_prompt(news_text_block="")
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["news_context"] is None
+
+
+def test_build_user_prompt_includes_news_text_block_verbatim_when_present():
+    block = "[CNBC - Tech]\n  - [2026-09-20] Beispiel-Meldung"
+    prompt = _build_minimal_prompt(news_text_block=block)
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["news_context"] == block
+
+
+def test_system_prompt_mentions_news_context_is_not_exhaustive_or_binding():
+    """Der System-Prompt muss Claude ueber das neue Feld informieren und
+    klarstellen, dass es kein Ausschlusskriterium/Vollstaendigkeitsanspruch
+    hat (eigene Nennung, nicht nur die bereits bestehende bei fundamentals)."""
+    assert "news_context" in SYSTEM_PROMPT
+    assert SYSTEM_PROMPT.count("KEIN Ausschlusskriterium") >= 2
