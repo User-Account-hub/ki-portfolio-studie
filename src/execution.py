@@ -81,6 +81,15 @@ class ExecutedOrderResult:
     # (oder kein Vergleich moeglich war: Claude ohne cycle_position-Angabe,
     # oder keine Regel-Klassifikation fuers Symbol verfuegbar).
     market_phase_contradiction: market_phase.MarketPhaseContradiction | None = None
+    # Bugfix 2026-09-21 (17-Punkte-Audit Fund #3, real eingetreten - siehe
+    # execute_proposed_orders' try/except unten): True, wenn diese Order
+    # NICHT wegen eines Guardrail-Vetos abgelehnt wurde, sondern weil ihre
+    # Ausfuehrung selbst eine unerwartete Exception geworfen hat (z.B. eine
+    # vom Broker abgelehnte fraktionierte Short-Order). Unterscheidet einen
+    # echten Fehler/Datenintegritaets-Fall im Report von einer normalen,
+    # planmaessigen Guardrail-Ablehnung (approved=False, execution_error=
+    # False) - siehe reporting.py.
+    execution_error: bool = False
 
 
 def resolve_price(symbol: str, underlying_symbol: str | None, current_prices: dict[str, float]) -> float:
@@ -345,143 +354,181 @@ def execute_proposed_orders(
             risk_check_log.append({"symbol": order.symbol, "approved": False, "reasons": [str(exc)]})
             continue
 
-        # Positionsgroessen-Skalierung (siehe src/position_sizing.py) - nur
-        # fuer positionsaufbauende Seiten (buy/short) und VOR der Guardrail-
-        # Pruefung unten, sodass die Kap.-6.8-Limiten anschliessend auf die
-        # bereits skalierte Groesse angewendet werden (Verfeinerung innerhalb
-        # der Limiten, kein zusaetzliches Veto und kein Aushebeln der
-        # Limiten). Zwei unabhaengige, MULTIPLIKATIV kombinierte Faktoren:
-        # (1) Volatilitaet - ein gemessenes Marktsignal, Band 0.5x-1.5x.
-        # (2) Konviktion - Claudes eigene, optionale Selbsteinschaetzung
-        #     (order.conviction); bewusst ein deutlich schwaecheres Band
-        #     (siehe position_sizing.CONVICTION_SCALING_FACTORS' Kommentar
-        #     fuer die ausfuehrliche Begruendung: unkalibrierte LLM-
-        #     Selbsteinschaetzung soll die Positionsgroesse nur leicht
-        #     nudgen, nicht substanziell treiben).
+        # Vor-Initialisiert (2026-09-21, Fund #3 unten), damit `scaling`/
+        # `conviction_factor`/`contradiction` im except-Block auch dann
+        # definiert sind, wenn eine Exception vor ihrer eigentlichen
+        # Zuweisung weiter unten auftritt.
         scaling: position_sizing.VolatilityScaling | None = None
         conviction_factor: float | None = None
-        if order.side in (OrderSide.BUY, OrderSide.SHORT):
-            if volatility_scaling:
-                scaling = volatility_scaling.get(order.symbol)
-            conviction_factor = position_sizing.conviction_scaling_factor(order.conviction)
+        contradiction: market_phase.MarketPhaseContradiction | None = None
 
-        combined_factor = (scaling.scaling_factor if scaling is not None else 1.0) * (conviction_factor or 1.0)
-        if combined_factor != 1.0:
-            scaled_quantity, scaled_notional = position_sizing.scale_order_size(
-                order.quantity, order.notional, combined_factor
-            )
-            order = order.model_copy(update={"quantity": scaled_quantity, "notional": scaled_notional})
+        try:
+            # Positionsgroessen-Skalierung (siehe src/position_sizing.py) - nur
+            # fuer positionsaufbauende Seiten (buy/short) und VOR der Guardrail-
+            # Pruefung unten, sodass die Kap.-6.8-Limiten anschliessend auf die
+            # bereits skalierte Groesse angewendet werden (Verfeinerung innerhalb
+            # der Limiten, kein zusaetzliches Veto und kein Aushebeln der
+            # Limiten). Zwei unabhaengige, MULTIPLIKATIV kombinierte Faktoren:
+            # (1) Volatilitaet - ein gemessenes Marktsignal, Band 0.5x-1.5x.
+            # (2) Konviktion - Claudes eigene, optionale Selbsteinschaetzung
+            #     (order.conviction); bewusst ein deutlich schwaecheres Band
+            #     (siehe position_sizing.CONVICTION_SCALING_FACTORS' Kommentar
+            #     fuer die ausfuehrliche Begruendung: unkalibrierte LLM-
+            #     Selbsteinschaetzung soll die Positionsgroesse nur leicht
+            #     nudgen, nicht substanziell treiben).
+            if order.side in (OrderSide.BUY, OrderSide.SHORT):
+                if volatility_scaling:
+                    scaling = volatility_scaling.get(order.symbol)
+                conviction_factor = position_sizing.conviction_scaling_factor(order.conviction)
 
-        open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
-        ctx = build_context(
-            portfolio_row, open_position_rows, trades_today, current_prices, start_of_run_nav,
-            symbol_metadata=symbol_metadata, peak_nav=peak_nav,
-        )
-
-        order_meta = symbol_metadata.get(order.symbol)
-        check = evaluate_order(
-            order, ctx, price, current_prices, risk_config,
-            order_segment=order_meta.segment if order_meta is not None else None,
-            order_cap_tier=order_meta.cap_tier if order_meta is not None else None,
-            universe_symbols=set(symbol_metadata) or None,
-            order_leveraged=getattr(order_meta, "leveraged", False) if order_meta is not None else False,
-            average_daily_volume=(average_daily_volumes or {}).get(order.symbol),
-        )
-        risk_check_log.append({"symbol": order.symbol, "approved": check.approved, "reasons": check.reasons})
-
-        # Markt-Phasen-Abgleich (rein dokumentarisch, kein Guardrail - siehe
-        # src/market_phase.py): Claudes optionale cycle_position-Angabe gegen
-        # die regelbasierte SMA/Vola-Klassifikation. Unabhaengig von
-        # `check.approved` berechnet (auch eine abgelehnte Order dokumentiert
-        # ihren Widerspruch), analog zu Vol-Skalierung/Konviktion oben.
-        phase_classification = (market_phases or {}).get(order.symbol)
-        contradiction = None
-        if phase_classification is not None:
-            contradiction = market_phase.check_cycle_position_against_market_phase(
-                order.symbol, order.cycle_position, phase_classification.phase
-            )
-            if contradiction is not None:
-                log.warning(
-                    "Markt-Phasen-Widerspruch: %s - kein Veto, nur dokumentiert.", contradiction.detail
+            combined_factor = (scaling.scaling_factor if scaling is not None else 1.0) * (conviction_factor or 1.0)
+            if combined_factor != 1.0:
+                scaled_quantity, scaled_notional = position_sizing.scale_order_size(
+                    order.quantity, order.notional, combined_factor
                 )
+                order = order.model_copy(update={"quantity": scaled_quantity, "notional": scaled_notional})
 
-        if not check.approved:
+            open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
+            ctx = build_context(
+                portfolio_row, open_position_rows, trades_today, current_prices, start_of_run_nav,
+                symbol_metadata=symbol_metadata, peak_nav=peak_nav,
+            )
+
+            order_meta = symbol_metadata.get(order.symbol)
+            check = evaluate_order(
+                order, ctx, price, current_prices, risk_config,
+                order_segment=order_meta.segment if order_meta is not None else None,
+                order_cap_tier=order_meta.cap_tier if order_meta is not None else None,
+                universe_symbols=set(symbol_metadata) or None,
+                order_leveraged=getattr(order_meta, "leveraged", False) if order_meta is not None else False,
+                average_daily_volume=(average_daily_volumes or {}).get(order.symbol),
+            )
+            risk_check_log.append({"symbol": order.symbol, "approved": check.approved, "reasons": check.reasons})
+
+            # Markt-Phasen-Abgleich (rein dokumentarisch, kein Guardrail - siehe
+            # src/market_phase.py): Claudes optionale cycle_position-Angabe gegen
+            # die regelbasierte SMA/Vola-Klassifikation. Unabhaengig von
+            # `check.approved` berechnet (auch eine abgelehnte Order dokumentiert
+            # ihren Widerspruch), analog zu Vol-Skalierung/Konviktion oben.
+            phase_classification = (market_phases or {}).get(order.symbol)
+            if phase_classification is not None:
+                contradiction = market_phase.check_cycle_position_against_market_phase(
+                    order.symbol, order.cycle_position, phase_classification.phase
+                )
+                if contradiction is not None:
+                    log.warning(
+                        "Markt-Phasen-Widerspruch: %s - kein Veto, nur dokumentiert.", contradiction.detail
+                    )
+
+            if not check.approved:
+                results.append(
+                    ExecutedOrderResult(
+                        order=order, approved=False, reasons=check.reasons,
+                        volatility_scaling=scaling, conviction_scaling_factor=conviction_factor,
+                        market_phase_contradiction=contradiction,
+                    )
+                )
+                continue
+
+            order_side = OrderSide(order.side)
+
+            # Korrelations-Beobachtung (rein dokumentarisch, kein Guardrail) -
+            # vor der Ausfuehrung, nur fuer BUY-Orders. `open_position_rows` ist
+            # hier bereits der Stand NACH allen vorherigen Orders dieses Laufs
+            # (siehe Neu-Abfrage oben), erfasst also auch bereits in diesem
+            # Lauf eroeffnete Positionen.
+            correlation_warnings: list[correlation.CorrelationWarning] = []
+            if order_side == OrderSide.BUY and correlation_matrix is not None and not correlation_matrix.empty:
+                existing_symbols = [r["symbol"] for r in open_position_rows]
+                correlation_warnings = correlation.check_correlation_to_existing_positions(
+                    order.symbol, existing_symbols, correlation_matrix
+                )
+                for w in correlation_warnings:
+                    log.warning(
+                        "Korrelations-Beobachtung: %s korreliert mit bestehender Position %s (%.2f) - "
+                        "kein Veto, nur dokumentiert.",
+                        w.candidate_symbol, w.existing_symbol, w.correlation,
+                    )
+
+            fill, source = _route_fill(
+                order_side,
+                order.symbol,
+                order.instrument_type.value,
+                order.quantity if order.quantity is not None else order.notional / price,
+                order.order_type,
+                order.limit_price,
+                price,
+                broker_client,
+            )
+
+            if fill.filled_qty <= 0:
+                # Broker hat (noch) keine oder null Stück gemeldet - z.B. eine vom
+                # Broker abgelehnte/stornierte Order oder ein Notional-Betrag, der
+                # zum Antwortzeitpunkt noch nicht gefüllt war. `trades.quantity`
+                # hat ein CHECK(quantity > 0); ein Insert würde die Pipeline zum
+                # Absturz bringen. Stattdessen: Order überspringen und dokumentieren,
+                # keine Cash-/Positions-/Trade-Mutation für diese Order.
+                reason = (
+                    f"Broker meldet gefüllte Menge {fill.filled_qty} (Status: {fill.status}) für "
+                    f"{order.symbol} - Order wird übersprungen, kein Trade gebucht."
+                )
+                results.append(
+                    ExecutedOrderResult(order=order, approved=False, reasons=[reason], market_phase_contradiction=contradiction)
+                )
+                risk_check_log.append({"symbol": order.symbol, "approved": False, "reasons": [reason]})
+                continue
+
+            # Neu einlesen der Portfolio-Zeile für aktuellen cash_balance vor jedem Trade.
+            portfolio_row = db.get_portfolio(conn, portfolio_row["name"])
             results.append(
                 ExecutedOrderResult(
-                    order=order, approved=False, reasons=check.reasons,
+                    order=order, approved=True, reasons=[], fill_price=fill.filled_price,
+                    correlation_warnings=correlation_warnings,
+                    volatility_scaling=scaling,
+                    conviction_scaling_factor=conviction_factor,
+                    market_phase_contradiction=contradiction,
+                )
+            )
+
+            trades_today[order.symbol] = trades_today.get(order.symbol, 0) + 1
+
+            # Trade + Positions-Update erfolgt sofort, Decision-Datensatz gebündelt danach.
+            results[-1].trade_id = _apply_fill_to_db(
+                conn, portfolio_row["id"], None, order, order_side, fill, source,
+                transaction_cost_pct=risk_config.transaction_cost_pct_of_notional,
+            )
+        except Exception as exc:
+            # Bugfix 2026-09-21 (17-Punkte-Audit Fund #3, real eingetreten im
+            # Lauf um 2026-09-21 17:36 UTC: eine fraktionierte Short-Order
+            # wurde vom Broker mit "fractional orders cannot be sold short"
+            # abgelehnt - die Exception lief vorher ungefangen bis zum
+            # Pipeline-Absturz durch. Vier zuvor in DERSELBEN Order-Liste
+            # bereits erfolgreich ausgefuehrte Buy-Orders blieben dabei OHNE
+            # decisions-Eintrag zurueck (ihre DB-Mutation war zu dem
+            # Zeitpunkt schon committet, siehe _apply_fill_to_db oben) - das
+            # untergrub die Idempotenz-Sperre (pipeline._already_decided_
+            # today), da diese exakt so einen decisions-Eintrag braucht.
+            # Dieses try/except faengt JEDE unerwartete Exception waehrend
+            # der Verarbeitung EINER Order ab, statt die gesamte restliche
+            # Order-Liste abstuerzen zu lassen: bereits committete Trades
+            # vorheriger Orders bleiben unberuehrt, die Schleife verarbeitet
+            # den Rest der Liste weiter, UND db.insert_decision unten wird
+            # garantiert IMMER erreicht (haelt die Idempotenz-Sperre
+            # zuverlaessig).
+            log.exception(
+                "Unerwarteter Fehler bei der Ausführung von Order %s (%s) - "
+                "Order übersprungen, restliche Order-Liste wird fortgesetzt.",
+                order.symbol, order.side,
+            )
+            reason = f"Unerwarteter Fehler bei Order-Ausführung ({type(exc).__name__}): {exc}"
+            results.append(
+                ExecutedOrderResult(
+                    order=order, approved=False, reasons=[reason], execution_error=True,
                     volatility_scaling=scaling, conviction_scaling_factor=conviction_factor,
                     market_phase_contradiction=contradiction,
                 )
             )
-            continue
-
-        order_side = OrderSide(order.side)
-
-        # Korrelations-Beobachtung (rein dokumentarisch, kein Guardrail) -
-        # vor der Ausfuehrung, nur fuer BUY-Orders. `open_position_rows` ist
-        # hier bereits der Stand NACH allen vorherigen Orders dieses Laufs
-        # (siehe Neu-Abfrage oben), erfasst also auch bereits in diesem
-        # Lauf eroeffnete Positionen.
-        correlation_warnings: list[correlation.CorrelationWarning] = []
-        if order_side == OrderSide.BUY and correlation_matrix is not None and not correlation_matrix.empty:
-            existing_symbols = [r["symbol"] for r in open_position_rows]
-            correlation_warnings = correlation.check_correlation_to_existing_positions(
-                order.symbol, existing_symbols, correlation_matrix
-            )
-            for w in correlation_warnings:
-                log.warning(
-                    "Korrelations-Beobachtung: %s korreliert mit bestehender Position %s (%.2f) - "
-                    "kein Veto, nur dokumentiert.",
-                    w.candidate_symbol, w.existing_symbol, w.correlation,
-                )
-
-        fill, source = _route_fill(
-            order_side,
-            order.symbol,
-            order.instrument_type.value,
-            order.quantity if order.quantity is not None else order.notional / price,
-            order.order_type,
-            order.limit_price,
-            price,
-            broker_client,
-        )
-
-        if fill.filled_qty <= 0:
-            # Broker hat (noch) keine oder null Stück gemeldet - z.B. eine vom
-            # Broker abgelehnte/stornierte Order oder ein Notional-Betrag, der
-            # zum Antwortzeitpunkt noch nicht gefüllt war. `trades.quantity`
-            # hat ein CHECK(quantity > 0); ein Insert würde die Pipeline zum
-            # Absturz bringen. Stattdessen: Order überspringen und dokumentieren,
-            # keine Cash-/Positions-/Trade-Mutation für diese Order.
-            reason = (
-                f"Broker meldet gefüllte Menge {fill.filled_qty} (Status: {fill.status}) für "
-                f"{order.symbol} - Order wird übersprungen, kein Trade gebucht."
-            )
-            results.append(
-                ExecutedOrderResult(order=order, approved=False, reasons=[reason], market_phase_contradiction=contradiction)
-            )
             risk_check_log.append({"symbol": order.symbol, "approved": False, "reasons": [reason]})
-            continue
-
-        # Neu einlesen der Portfolio-Zeile für aktuellen cash_balance vor jedem Trade.
-        portfolio_row = db.get_portfolio(conn, portfolio_row["name"])
-        results.append(
-            ExecutedOrderResult(
-                order=order, approved=True, reasons=[], fill_price=fill.filled_price,
-                correlation_warnings=correlation_warnings,
-                volatility_scaling=scaling,
-                conviction_scaling_factor=conviction_factor,
-                market_phase_contradiction=contradiction,
-            )
-        )
-
-        trades_today[order.symbol] = trades_today.get(order.symbol, 0) + 1
-
-        # Trade + Positions-Update erfolgt sofort, Decision-Datensatz gebündelt danach.
-        results[-1].trade_id = _apply_fill_to_db(
-            conn, portfolio_row["id"], None, order, order_side, fill, source,
-            transaction_cost_pct=risk_config.transaction_cost_pct_of_notional,
-        )
 
     decision_id = db.insert_decision(
         conn,

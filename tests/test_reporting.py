@@ -386,6 +386,55 @@ def test_report_mentions_no_veto_for_market_phase_check():
     assert "KEINE automatische Ablehnung" in section
 
 
+# --- Fund #3 Bugfix: execution_error klar dokumentiert (2026-09-21) -----------
+
+
+def test_report_shows_distinct_status_for_execution_error():
+    """Eine Order, die an einem unerwarteten Ausführungsfehler gescheitert
+    ist (execution_error=True), muss sich im Report klar von einer normalen
+    Guardrail-Ablehnung unterscheiden - nicht dieselbe "❌ abgelehnt"-Zeile."""
+    failed = ExecutedOrderResult(
+        order=_make_buy_order("BBB"), approved=False,
+        reasons=["Unerwarteter Fehler bei Order-Ausführung (RuntimeError): "
+                 "fractional orders cannot be sold short"],
+        execution_error=True,
+    )
+    content = _generate(deep_reflection=None, executed_results=[failed])
+    assert "⚠️ Fehler bei Ausführung" in content
+    assert "fractional orders cannot be sold short" in content
+
+
+def test_report_execution_error_status_differs_from_normal_rejection():
+    rejected = ExecutedOrderResult(
+        order=_make_buy_order("AAA"), approved=False, reasons=["Trade-Notional übersteigt Limit."],
+    )
+    failed = ExecutedOrderResult(
+        order=_make_buy_order("BBB"), approved=False, reasons=["Broker-Fehler."], execution_error=True,
+    )
+    ok = ExecutedOrderResult(order=_make_buy_order("CCC"), approved=True, reasons=[], fill_price=100.0)
+
+    content = _generate(deep_reflection=None, executed_results=[rejected, failed, ok])
+    table = content.split("## Trades in diesem Lauf")[1].split("## Kommentar des Modells")[0]
+    assert "| AAA | buy | ❌ abgelehnt |" in table
+    assert "| BBB | buy | ⚠️ Fehler bei Ausführung |" in table
+    assert "| CCC | buy | ✅ ausgeführt |" in table
+
+
+def test_report_warns_prominently_when_any_execution_error_present():
+    failed = ExecutedOrderResult(
+        order=_make_buy_order("BBB"), approved=False, reasons=["Broker-Fehler."], execution_error=True,
+    )
+    content = _generate(deep_reflection=None, executed_results=[failed])
+    assert "FEHLER bei mindestens einer Order-Ausführung" in content
+
+
+def test_report_no_execution_error_warning_when_all_orders_normal():
+    ok = ExecutedOrderResult(order=_make_buy_order("CCC"), approved=True, reasons=[], fill_price=100.0)
+    rejected = ExecutedOrderResult(order=_make_buy_order("AAA"), approved=False, reasons=["Limit überschritten."])
+    content = _generate(deep_reflection=None, executed_results=[ok, rejected])
+    assert "FEHLER bei mindestens einer Order-Ausführung" not in content
+
+
 # --- Event-Kalender-Hinweis --------------------------------------------------
 
 

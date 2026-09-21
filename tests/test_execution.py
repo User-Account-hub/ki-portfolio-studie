@@ -929,3 +929,118 @@ def test_execute_proposed_orders_without_correlation_matrix_is_noop():
         broker_client=ImmediateFillClient(filled_qty=40.0, filled_avg_price=100.0),
     )
     assert results[0].correlation_warnings == []
+
+
+# --- Fund #3 Bugfix (17-Punkte-Audit, real eingetreten 2026-09-21 17:36 UTC) ---
+
+
+class RaisingClient:
+    """Simuliert einen Broker-Fehler beim Order-Submit (z.B. Alpacas reale
+    Ablehnung 'fractional orders cannot be sold short') - im Unterschied zu
+    ImmediateFillClient wirft submit_order() statt eine Fill-Antwort zurueck-
+    zugeben."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def submit_order(self, request):
+        raise self._exc
+
+
+def test_execute_proposed_orders_continues_after_broker_error_mid_list():
+    """Regressionstest fuer den real eingetretenen Absturz: eine Order MITTEN
+    in der Liste wirft beim Broker-Submit eine unerwartete Exception (hier:
+    reale Alpaca-Meldung 'fractional orders cannot be sold short' fuer eine
+    fraktionierte Short-Order). Vorher lief diese Exception ungefangen durch
+    execute_proposed_orders' Schleife und liess die Pipeline abstuerzen -
+    eine bereits erfolgreich ausgefuehrte Order VOR der fehlerhaften blieb
+    dabei OHNE decisions-Eintrag zurueck (verwaister Trade, siehe
+    db.insert_decision/UPDATE-Verknuepfung unten in execution.py), was auch
+    die Idempotenz-Sperre (pipeline._already_decided_today) untergrub.
+
+    Erwartung jetzt: (1) die Order VOR dem Fehler bleibt erfolgreich gebucht,
+    (2) die fehlerhafte Order wird als execution_error dokumentiert statt
+    die Funktion abstuerzen zu lassen, (3) die Order NACH dem Fehler in der
+    Liste wird trotzdem noch verarbeitet, (4) genau EIN decisions-Eintrag
+    wird fuer den gesamten Lauf geschrieben (haelt die Idempotenz-Sperre
+    zuverlaessig), (5) ALLE erfolgreichen Trades sind mit diesem einen
+    decisions-Eintrag verknuepft - keine verwaisten Trades (decision_id IS
+    NULL)."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.05)
+
+    order_before = ProposedOrder(
+        symbol="MINI-A-1", instrument_type="mini_future", underlying_symbol="AAA",
+        side="buy", notional=4_000.0, rationale="vor dem Fehler",
+    )
+    order_crashing = ProposedOrder(
+        symbol="BBB", instrument_type="equity",
+        side="short", quantity=10.5, rationale="Broker lehnt fraktionierte Short-Order ab",
+    )
+    order_after = ProposedOrder(
+        symbol="MINI-C-1", instrument_type="mini_future", underlying_symbol="CCC",
+        side="buy", notional=3_000.0, rationale="nach dem Fehler",
+    )
+
+    broker_error = RuntimeError('{"code":42210000,"message":"fractional orders cannot be sold short"}')
+    broker_client = RaisingClient(broker_error)
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order_before, order_crashing, order_after],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"AAA": 100.0, "BBB": 50.0, "CCC": 100.0},
+        start_of_run_nav=1_000_000.0,
+        broker_client=broker_client,
+    )
+
+    assert [r.approved for r in results] == [True, False, True]
+    assert [r.execution_error for r in results] == [False, True, False]
+    assert "fractional orders cannot be sold short" in results[1].reasons[0]
+
+    # Genau EIN decisions-Eintrag fuer den gesamten Lauf, trotz des Fehlers
+    # mitten in der Liste - die Idempotenz-Sperre findet diesen Eintrag beim
+    # naechsten Lauf desselben Tages und blockiert korrekt erneuten Handel.
+    decisions = conn.execute("SELECT * FROM decisions WHERE portfolio_id = ?", (portfolio["id"],)).fetchall()
+    assert len(decisions) == 1
+    assert decisions[0]["proposed_orders"] is not None
+
+    # Beide erfolgreichen Trades sind mit GENAU diesem einen decisions-
+    # Eintrag verknuepft - keine verwaisten Trades.
+    trades = conn.execute("SELECT * FROM trades WHERE portfolio_id = ?", (portfolio["id"],)).fetchall()
+    assert len(trades) == 2
+    assert all(t["decision_id"] == decisions[0]["id"] for t in trades)
+    assert {t["symbol"] for t in trades} == {"MINI-A-1", "MINI-C-1"}
+
+
+def test_execute_proposed_orders_broker_error_does_not_lose_previously_fetched_reasons_data():
+    """Der execution_error-Datensatz muss dieselben optionalen Felder tragen
+    wie ein normaler ExecutedOrderResult, ohne AttributeError - inkl. der
+    Werte, die VOR dem fehlgeschlagenen Broker-Aufruf bereits berechnet
+    wurden (volatility_scaling/conviction_scaling_factor), dank der
+    Vor-Initialisierung in execute_proposed_orders. Kein Volatilitaetsdatum
+    fuer "BBB" uebergeben -> volatility_scaling bleibt None; conviction_
+    scaling_factor ist 1.0 (neutraler Default ohne Claude-Konviktionsangabe,
+    bereits vor dem Broker-Aufruf gesetzt)."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config()
+
+    order = ProposedOrder(
+        symbol="BBB", instrument_type="equity", side="buy", quantity=5.0, rationale="test",
+    )
+    broker_client = RaisingClient(RuntimeError("simulierter Netzwerkfehler"))
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"BBB": 50.0}, start_of_run_nav=1_000_000.0,
+        broker_client=broker_client,
+    )
+
+    assert results[0].execution_error is True
+    assert results[0].approved is False
+    assert results[0].volatility_scaling is None
+    assert results[0].conviction_scaling_factor == pytest.approx(1.0)
+    assert results[0].market_phase_contradiction is None
+    assert results[0].trade_id is None

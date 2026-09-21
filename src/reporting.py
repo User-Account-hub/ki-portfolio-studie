@@ -269,11 +269,25 @@ def generate_report(
         "INNERHALB der Kap.-6.8-Limiten, kein zusätzliches Veto. \"-\" = nicht anwendbar (sell/cover, "
         "oder bei Vol-Skalierung: keine Volatilitätsdaten für das Symbol)._"
     )
+    if any(r.execution_error for r in executed_results):
+        lines.append(
+            "_⚠️ FEHLER bei mindestens einer Order-Ausführung in diesem Lauf (siehe Status-Spalte "
+            "unten, Bugfix 2026-09-21/Fund #3) - unterscheidet sich von einer normalen, planmäßigen "
+            "Ablehnung: die Order hat eine Guardrail-Prüfung bestanden, ist aber danach an einem "
+            "unerwarteten Fehler (z.B. einer vom Broker abgelehnten fraktionierten Short-Order) "
+            "gescheitert. Vorherige Orders in derselben Liste, die bereits erfolgreich ausgeführt "
+            "wurden, bleiben davon unberührt - siehe deren eigene Zeile mit Status \"✅ ausgeführt\"._"
+        )
     if executed_results:
         lines.append("| Symbol | Seite | Status | Vol-Skalierung | Konviktion | Begründung |")
         lines.append("|---|---|---|---|---|---|")
         for r in executed_results:
-            status = "✅ ausgeführt" if r.approved else "❌ abgelehnt"
+            if r.execution_error:
+                status = "⚠️ Fehler bei Ausführung"
+            elif r.approved:
+                status = "✅ ausgeführt"
+            else:
+                status = "❌ abgelehnt"
             reason = "; ".join(r.reasons) if r.reasons else r.order.rationale
             if r.volatility_scaling is not None:
                 vs = r.volatility_scaling
