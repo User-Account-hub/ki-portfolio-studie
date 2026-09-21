@@ -100,7 +100,90 @@ Stand nach Lauf 2, gemäss `report_2026-09-21_181416.md` und `db/portfolio.db`:
 | BWXT | 253.8157 | 147.96 USD |
 | ISRG | 116.5366 | 399.72 USD |
 
-## 6. Hinweis: untypischer erster Tag
+## 6. Kaufbegründungen je Trade (wortgetreu aus der DB)
+
+_Auf Nachfrage ergänzt: die Original-Kaufbegründungen aus `decisions.proposed_orders` (JSON-Feld je
+Order, Quelle: Claudes strukturierte Antwort), vollständig und wortgetreu übernommen, nicht
+zusammengefasst oder umformuliert._
+
+### AVGO, TSM, MU, CCJ (`decisions.id=19`)
+
+**Nicht verfügbar.** Wie in Abschnitt 2 beschrieben, stürzte Lauf 1 ab, bevor der `decisions`-Eintrag
+für diesen Lauf geschrieben wurde - Claudes vollständige Antwort (`raw_response`, inkl. `proposed_orders`
+mit den Feldern `rationale`, `cycle_position`, `conviction`, `boundary_conditions` je Order) wurde
+dadurch **nie persistiert** und ist nicht rekonstruierbar. `decisions.id=19` enthält ausschliesslich
+den nachträglichen Audit-Backfill-Text (siehe Abschnitt 3/Commit `7cda30a`), keine
+Original-Investment-Begründung. Dieser Verlust betrifft ausschliesslich die Text-Begründung der
+vier Trades - Symbol, Menge, Preis, Zeitpunkt und Broker-Order-ID sind über die `trades`-Tabelle
+weiterhin vollständig und korrekt dokumentiert (siehe Abschnitt 2).
+
+### CEG (`decisions.id=20`)
+
+- **Zyklus-Position:** `reversion_to_mean`
+- **Konviktion:** `medium`
+
+> CEG (Wide Moat: bestehende Nuklearflotte + regulatorische Eintrittsbarrieren) notiert unter SMA20
+> (277.5) und nahe SMA50 (271.2) nach Konsolidierung - keine Manie-Extension wie z.B. AMD/Quantum-Titel
+> heute (+5-15% Tagesgewinne laut News). Wirkungsmechanismus (Kap.4): strukturelles
+> Angebots-Nachfrage-Ungleichgewicht bei Stromkapazität durch AI-Rechenzentren treibt mehrjährige
+> Neubewertung; Markt fokussiert kurzfristig auf Chip-Quartalszahlen, ignoriert die langsamere aber
+> verlässlichere Power-Story - Zeithorizont-Vorteil (b). Ergänzt bestehende CCJ-Position (Brennstoff)
+> um die Erzeugungsseite der Nuklear-These. Zeitfenster: 3-6 Monate bis zur Bestätigung über
+> PPA-Ankündigungen/Quartalsguidance. Gegenrisiko: hohe Verschuldung (D/E ~76) und negativer FCF durch
+> Capex.
+
+Randbedingungen (Kap. 7):
+- Bestätigung: Rückeroberung SMA50 (~271) und Ausbruch über 275 als Zeichen erneuter Nachfrage nach
+  Nuklear-PPA-Kapazität für Hyperscaler (Kursschwelle: 275.00)
+- Entkräftung: Bruch unter 245 (ca. -7%) würde auf strukturelle Probleme bei
+  Nuklear-Kapazitätserweiterung/PPA-Pipeline hindeuten statt auf normale Konsolidierung
+  (Kursschwelle: 245.00)
+
+### BWXT (`decisions.id=20`)
+
+- **Zyklus-Position:** `reversion_to_mean`
+- **Konviktion:** `medium`
+
+> BWXT (Wide Moat: einer von sehr wenigen zertifizierten Lieferanten für US-Navy-Reaktoren und
+> medizinische Isotope, jahrzehntelange Regierungsverträge) ist ~9% unter SMA50 (162.9)
+> zurückgefallen, Volatilität mit 0.39 unterdurchschnittlich - kein Mania-Muster. Informationsvorteil
+> (a): Backlog aus Regierungsaufträgen wird von generalistischen Momentum-Investoren, die aktuell
+> AI-Chip-/Krypto-Schlagzeilen jagen, kaum beachtet. Wirkungsmechanismus (Kap.4): langzyklische
+> Auftragsvisibilität treibt planbares Ertragswachstum und Neubewertung. Zeitfenster: 3-6 Monate bis
+> zum nächsten Quartalsbericht mit Backlog-Update. Gegenrisiko: moderate Verschuldung (D/E ~151),
+> Abhängigkeit von Regierungsbudgets.
+
+Randbedingungen (Kap. 7):
+- Bestätigung: Rückkehr über 160 (Richtung SMA50 bei 163) als Signal für anziehende Nachfrage nach
+  Naval-Reactor/Medical-Isotope-Backlog (Kursschwelle: 160.00)
+- Entkräftung: Bruch unter 135 (ca. -9%) würde auf nachlassende staatliche Auftragsvergabe oder
+  Margendruck hindeuten (Kursschwelle: 135.00)
+- Qualitativ: nächster Quartalsbericht muss Backlog-Wachstum im Naval-Reactor/Advanced-Nuclear-Segment
+  bestätigen
+
+### ISRG (`decisions.id=20`)
+
+- **Zyklus-Position:** `attention`
+- **Konviktion:** `high`
+
+> ISRG (Wide Moat: dominante Marktstellung bei Chirurgie-Robotik, Razor-Razorblade-Modell mit hohen
+> Wechselkosten) notiert moderat über SMA20/50 (+7%), aber mit der niedrigsten annualisierten
+> Volatilitat im gesamten Universum (0.28 vs. Durchschnitt >0.6) - Indikator für stetige
+> institutionelle statt retail-getriebene Manie-Akkumulation, klar abgrenzbar von den
+> 5-15%-Tagesgewinnen in Quantum-/Krypto-Mining-Titeln laut News heute. Verhaltensvorteil (c):
+> bewusste Rotation in einen bilanzstarken Compounder statt Momentum-Chasing in überhitzten
+> Segmenten. Wirkungsmechanismus (Kap.4): Netzwerkeffekt der installierten Basis
+> (Da-Vinci-Systeme) treibt wiederkehrende, planbare Instrumentenumsätze und Margenexpansion.
+> Zeitfenster: 3-6 Monate bis zum nächsten Quartalsbericht mit Prozedurenvolumen-Daten. Gegenrisiko:
+> hohe Bewertung, Multiple-Kompression bei Zinsanstieg.
+
+Randbedingungen (Kap. 7):
+- Bestätigung: neues Hoch über 415 als Zeichen fortgesetzter institutioneller Akkumulation ohne
+  Manie-Charakter (Kursschwelle: 415.00)
+- Entkräftung: Bruch unter 355 (ca. -11%, deutlich unter SMA50) würde auf nachlassende
+  Prozedurenvolumina/Systemplatzierungen hindeuten (Kursschwelle: 355.00)
+
+## 7. Hinweis: untypischer erster Tag
 
 Der 2026-09-21 umfasste **zwei vollständige Entscheidungsrunden** (Lauf 1 und Lauf 2) statt der
 regulär vorgesehenen einen - bedingt durch die produktive Fehlersuche und -behebung am selben Tag
