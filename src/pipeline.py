@@ -678,6 +678,7 @@ def run(force: bool | None = None) -> None:
             latest_reflection = db.get_latest_reflection(conn, portfolio_row["id"])
             prompt = build_user_prompt(
                 portfolio_row, open_position_rows, watchlist, snapshots, risk_config,
+                start_of_run_nav=start_of_run_nav,
                 latest_reflection=latest_reflection,
                 triggered_boundary_conditions=triggered_boundary_conditions,
                 still_open_boundary_conditions=still_open_boundary_conditions,

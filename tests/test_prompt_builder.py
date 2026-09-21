@@ -115,6 +115,7 @@ def _build_minimal_prompt(
     watchlist = Watchlist(benchmark_symbol="SPY", symbols=[WatchlistSymbol(symbol="AAPL", instrument_type="equity")])
     return build_user_prompt(
         portfolio_row, [], watchlist, {}, make_risk_config(),
+        start_of_run_nav=100_000.0,
         latest_reflection=latest_reflection,
         triggered_boundary_conditions=triggered_boundary_conditions,
         still_open_boundary_conditions=still_open_boundary_conditions,
@@ -310,7 +311,7 @@ def test_build_user_prompt_includes_volume_in_market_data():
             volatility_20d_annualized=0.25, volume=45_123_456,
         )
     }
-    prompt = build_user_prompt(portfolio_row, [], watchlist, snapshots, make_risk_config())
+    prompt = build_user_prompt(portfolio_row, [], watchlist, snapshots, make_risk_config(), start_of_run_nav=100_000.0)
     payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
     assert payload["market_data"]["AAPL"]["volume"] == 45_123_456
 
@@ -324,7 +325,7 @@ def test_build_user_prompt_market_data_volume_is_none_when_unavailable():
             volatility_20d_annualized=0.25, volume=None,
         )
     }
-    prompt = build_user_prompt(portfolio_row, [], watchlist, snapshots, make_risk_config())
+    prompt = build_user_prompt(portfolio_row, [], watchlist, snapshots, make_risk_config(), start_of_run_nav=100_000.0)
     payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
     assert payload["market_data"]["AAPL"]["volume"] is None
 
@@ -382,3 +383,78 @@ def test_system_prompt_mentions_tiered_drawdown_position_size_reduction():
     assert "-15%" in SYSTEM_PROMPT
     assert "75%" in SYSTEM_PROMPT
     assert "50%" in SYSTEM_PROMPT
+
+
+# --- v11: vorberechnete max_conservative_notional_usd (2026-09-21) -----------
+
+
+def test_system_prompt_mentions_max_conservative_notional_field_v11():
+    """v11: Reaktion auf Testlauf 94f4465, in dem die rein qualitative
+    v10-Empfehlung nicht ausreichte - Claude muss auf das neue, konkret
+    vorberechnete Feld "max_conservative_notional_usd" je Titel hingewiesen
+    und angewiesen werden, es als verbindliche Obergrenze zu behandeln."""
+    assert "max_conservative_notional_usd" in SYSTEM_PROMPT
+    assert "VERBINDLICHE OBERGRENZE" in SYSTEM_PROMPT
+
+
+def test_build_user_prompt_max_conservative_notional_reflects_worst_case_volatility_scaling():
+    """Zwei Symbole mit unterschiedlicher Volatilitaet muessen unterschiedliche
+    max_conservative_notional_usd-Werte bekommen: das Symbol mit der
+    NIEDRIGEREN Volatilitaet wird staerker hochskaliert (hoeherer
+    Skalierungsfaktor) und darf deshalb UNSKALIERT weniger vorgeschlagen
+    werden, damit es nach der Skalierung nicht ueber dem Limit landet."""
+    portfolio_row = {"name": "test", "currency": "USD", "cash_balance": 1_000_000.0, "benchmark_symbol": "SPY"}
+    watchlist = Watchlist(
+        benchmark_symbol="SPY",
+        symbols=[
+            WatchlistSymbol(symbol="LOWVOL", instrument_type="equity"),
+            WatchlistSymbol(symbol="HIGHVOL", instrument_type="equity"),
+        ],
+    )
+    snapshots = {
+        "LOWVOL": MarketSnapshot(
+            symbol="LOWVOL", last_price=100.0, change_1d_pct=0.0, sma20=100.0, sma50=100.0,
+            volatility_20d_annualized=0.10, volume=1_000_000,
+        ),
+        "HIGHVOL": MarketSnapshot(
+            symbol="HIGHVOL", last_price=100.0, change_1d_pct=0.0, sma20=100.0, sma50=100.0,
+            volatility_20d_annualized=0.90, volume=1_000_000,
+        ),
+    }
+    risk_config = make_risk_config(
+        max_trade_notional_pct_of_nav=0.05, volatility_scaling_min_factor=0.5, volatility_scaling_max_factor=1.5
+    )
+    prompt = build_user_prompt(portfolio_row, [], watchlist, snapshots, risk_config, start_of_run_nav=1_000_000.0)
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+
+    # avg_vol = (0.10+0.90)/2 = 0.50; LOWVOL-Faktor = 0.50/0.10 = 5.0 -> auf
+    # max_factor 1.5 geclippt; HIGHVOL-Faktor = 0.50/0.90 = 0.5556 (kein
+    # Clipping noetig). Trade-Notional-Limit = 0.05 * 1_000_000 = 50_000.
+    trade_notional_limit = 50_000.0
+    expected_lowvol = trade_notional_limit / (1.5 * 1.15)
+    expected_highvol = trade_notional_limit / ((0.50 / 0.90) * 1.15)
+
+    assert payload["market_data"]["LOWVOL"]["max_conservative_notional_usd"] == pytest.approx(expected_lowvol)
+    assert payload["market_data"]["HIGHVOL"]["max_conservative_notional_usd"] == pytest.approx(expected_highvol)
+    assert expected_lowvol < expected_highvol
+
+
+def test_build_user_prompt_max_conservative_notional_uses_conviction_only_without_volatility_data():
+    """Fehlen Volatilitaetsdaten fuer ein Symbol, muss der Vol-Faktor wie in
+    execution.py auf 1.0 (KEINE Skalierung) fallen, nicht auf 0.5x-1.5x -
+    max_conservative_notional_usd ist dann nur durch den worst-case
+    Konviktions-Faktor (1.15) begrenzt."""
+    portfolio_row = {"name": "test", "currency": "USD", "cash_balance": 1_000_000.0, "benchmark_symbol": "SPY"}
+    watchlist = Watchlist(benchmark_symbol="SPY", symbols=[WatchlistSymbol(symbol="NOVOL", instrument_type="equity")])
+    snapshots = {
+        "NOVOL": MarketSnapshot(
+            symbol="NOVOL", last_price=100.0, change_1d_pct=0.0, sma20=100.0, sma50=100.0,
+            volatility_20d_annualized=None, volume=1_000_000,
+        )
+    }
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.05)
+    prompt = build_user_prompt(portfolio_row, [], watchlist, snapshots, risk_config, start_of_run_nav=1_000_000.0)
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+
+    expected = (0.05 * 1_000_000.0) / 1.15
+    assert payload["market_data"]["NOVOL"]["max_conservative_notional_usd"] == pytest.approx(expected)

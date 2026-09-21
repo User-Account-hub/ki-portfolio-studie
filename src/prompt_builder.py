@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 
+from src import position_sizing
 from src.config import RiskConfig, Watchlist
 from src.data_fetch import MarketSnapshot
+from src.order_schema import ConvictionLevel
 
 # Prompt-Versionswechsel v2 (2026-09-10, Thesis Kap. 6.2): expliziter
 # Renditemaximierungs-Auftrag ("Dein Ziel ist die Maximierung der
@@ -74,6 +76,41 @@ from src.data_fetch import MarketSnapshot
 # bleiben unveraendert) und aendert keinen bestehenden Mechanismus - es
 # stellt Claude lediglich Wissen ueber eine Regel bereit, die serverseitig
 # ohnehin schon seit 2026-09-19 gilt.
+#
+# Prompt-Versionswechsel v11 (2026-09-21): der rein QUALITATIVE v10-Hinweis
+# ("schlage tendenziell konservativer vor") reichte nicht aus - siehe
+# Testlauf 94f4465 (reports/report_2026-09-21_170645.md, erster echter
+# Claude-Aufruf NACH dem v10-Hinweis): alle 5 vorgeschlagenen Kauf-Orders
+# (TSM, ASML, AVGO, NVDA, CEG) wurden erneut AUSSCHLIESSLICH wegen der
+# nachtraeglichen Skalierung (1.42x-1.50x Vol- x 1.00-1.15x
+# Konviktions-Faktor) ueber das Trade-Notional-Limit gehoben und abgelehnt;
+# zwei der fuenf Vorschlaege (TSM, NVDA) lagen sogar praktisch exakt AM
+# unskalierten Limit, ohne jeden Sicherheitsabstand fuer die angekuendigte
+# Skalierung. v11 ersetzt die qualitative Empfehlung durch eine JE SYMBOL
+# VORAB BERECHNETE, KONKRETE Obergrenze: neues Feld
+# "max_conservative_notional_usd" in "market_data" je Titel (siehe
+# _compute_max_conservative_notional_hints unten) = das Trade-Notional-
+# Limit (risk_limits.max_trade_notional_pct_of_nav * NAV zu Laufbeginn)
+# geteilt durch den WORST-CASE kombinierten Skalierungsfaktor (den fuer
+# dieses Symbol tatsaechlichen Volatilitaets-Faktor - identisch berechnet
+# wie in execution.py/position_sizing.compute_scaling_factors, mit
+# denselben "snapshots" - MAL dem hoechstmoeglichen Konviktions-Faktor
+# CONVICTION_SCALING_FACTORS[HIGH] = 1.15, unabhaengig davon, welche
+# Konviktion Claude am Ende tatsaechlich waehlt oder ob ueberhaupt eine
+# angegeben wird - da die Konviktion erst TEIL von Claudes Antwort ist und
+# zum Zeitpunkt der Prompt-Erstellung noch nicht feststeht). Haelt sich
+# Claude an diesen Wert fuer quantity*price bzw. notional einer buy/short-
+# Order, kann die anschliessende Skalierung das Trade-Notional-Limit in
+# KEINEM Fall mehr ueberschreiten, unabhaengig von Claudes Konviktions-Wahl.
+#
+# BEWUSSTE AUSNAHME von derselben Governance-Regel wie v10 oben (keine
+# methodischen/inhaltlichen SYSTEM_PROMPT-Aenderungen waehrend der
+# laufenden offiziellen Studie) - aus demselben Grund am selben Tag: die
+# v10-Ausnahme war bereits gewaehrt, v11 behebt lediglich, dass v10s rein
+# qualitative Formulierung ihr eigenes Ziel nicht erreichte. Kein weiterer
+# Eingriff in die Anlagelogik/-kriterien (Anforderungen 1-7 unten
+# unveraendert) - reine Praezisierung einer bereits als Ausnahme
+# akzeptierten Transparenz-Ergaenzung.
 SYSTEM_PROMPT = """\
 Du bist der Portfolio-Analyst einer KI-gestützten Portfolio-Fallstudie im Paper-Trading-Modus \
 (kein echtes Geld). Du erhältst den aktuellen Portfolio-Zustand und Marktdaten für ein festes \
@@ -180,6 +217,16 @@ Grösse: schlage tendenziell etwas konservativer vor, insbesondere bei Titeln mi
 eingetretenem Portfolio-Drawdown, damit die kombinierte, mehrfach angepasste Grösse \
 innerhalb der Risikolimiten bleibt, statt allein wegen dieser nachträglichen Anpassungen \
 abgelehnt oder unerwartet klein ausgeführt zu werden.
+- VERBINDLICHE OBERGRENZE (v11): Für jeden Titel im Marktdaten-Kontext ist bereits das Feld \
+"max_conservative_notional_usd" vorberechnet - das ist die maximale UNSKALIERTE \
+Order-Grösse (quantity × Preis bzw. notional) für eine buy/short-Order auf diesen Titel, \
+die auch im WORST CASE (höchstmöglicher Konviktions-Faktor ×1.15, unabhängig davon, welche \
+Konviktion du am Ende angibst oder ob überhaupt eine) nach der Volatilitäts- und \
+Konviktions-Skalierung aus Punkt (1)/(2) oben noch sicher unter dem Trade-Notional-Limit \
+bleibt. Für eine buy/short-Order gilt: dein vorgeschlagener notional-Wert bzw. \
+quantity × "last_price" DARF "max_conservative_notional_usd" NICHT ÜBERSCHREITEN. Das \
+Liquiditäts- und Drawdown-Limit aus Punkt (3)/(4) sind darin NICHT eingerechnet - bei \
+dünn gehandelten Titeln oder während eines Portfolio-Drawdowns bleib zusätzlich darunter.
 
 JSON-Ausgabeschema:
 {
@@ -214,12 +261,54 @@ Wenn du aktuell keine Handlung empfiehlst, gib "orders": [] zurück und begründ
 """
 
 
+def _compute_max_conservative_notional_hints(
+    snapshots: dict[str, MarketSnapshot],
+    risk_config: RiskConfig,
+    start_of_run_nav: float,
+) -> dict[str, float]:
+    """v11 (2026-09-21, siehe Code-Kommentar bei SYSTEM_PROMPT): je Symbol \
+die maximale UNSKALIERTE buy/short-Order-Grösse (Notional, USD), die auch im \
+WORST CASE (kleinstmöglicher Volatilitäts-Skalierungsfaktor für dieses Symbol × \
+höchstmöglicher Konviktions-Faktor CONVICTION_SCALING_FACTORS[HIGH]) noch unter \
+risk_config.max_trade_notional_pct_of_nav * start_of_run_nav bleibt.
+
+    Nutzt exakt dieselbe Berechnung wie die spätere reale Skalierung \
+(pipeline._compute_volatility_scaling / execution.py), mit denselben `snapshots` \
+und `risk_config` - die hier gelieferte Zahl weicht deshalb nicht von der später \
+tatsächlich angewendeten Skalierung ab. Symbole ohne Volatilitätsdaten erhalten \
+Skalierungsfaktor 1.0 (siehe execution.py: kein Eintrag -> keine Vol-Skalierung, \
+nur der Konviktions-Faktor wirkt noch), NICHT 0.5x-1.5x - das entspricht exakt dem \
+Verhalten von execution.py's `scaling.scaling_factor if scaling is not None else 1.0`."""
+    volatilities = {
+        symbol: snap.volatility_20d_annualized
+        for symbol, snap in snapshots.items()
+        if snap.volatility_20d_annualized is not None
+    }
+    scaling_by_symbol = position_sizing.compute_scaling_factors(
+        volatilities,
+        min_factor=risk_config.volatility_scaling_min_factor,
+        max_factor=risk_config.volatility_scaling_max_factor,
+    )
+    worst_case_conviction_factor = position_sizing.CONVICTION_SCALING_FACTORS[ConvictionLevel.HIGH]
+    trade_notional_limit = risk_config.max_trade_notional_pct_of_nav * start_of_run_nav
+
+    hints: dict[str, float] = {}
+    for symbol in snapshots:
+        vol_scaling = scaling_by_symbol.get(symbol)
+        worst_case_factor = (vol_scaling.scaling_factor if vol_scaling is not None else 1.0) * (
+            worst_case_conviction_factor
+        )
+        hints[symbol] = trade_notional_limit / worst_case_factor
+    return hints
+
+
 def build_user_prompt(
     portfolio_row,
     open_positions: list,
     watchlist: Watchlist,
     snapshots: dict[str, MarketSnapshot],
     risk_config: RiskConfig,
+    start_of_run_nav: float,
     latest_reflection=None,
     triggered_boundary_conditions: list | None = None,
     still_open_boundary_conditions: list | None = None,
@@ -258,6 +347,9 @@ def build_user_prompt(
         for s in watchlist.symbols
     ]
 
+    max_conservative_notional_hints = _compute_max_conservative_notional_hints(
+        snapshots, risk_config, start_of_run_nav
+    )
     market_data = {
         symbol: {
             "last_price": snap.last_price,
@@ -268,6 +360,12 @@ def build_user_prompt(
             # Kap. 6.13 Liquiditätslimit (2026-09-21) - zuletzt bekanntes
             # Tagesvolumen, siehe risk_guardrails.check_liquidity_limit.
             "volume": snap.volume,
+            # v11 (2026-09-21, siehe SYSTEM_PROMPT-Kommentar/"VERBINDLICHE
+            # OBERGRENZE"-Hinweis): maximale UNSKALIERTE buy/short-Notional
+            # für diesen Titel, die auch im Worst-Case (höchstmöglicher
+            # Konviktions-Faktor) nach der Vol-/Konviktions-Skalierung noch
+            # unter dem Trade-Notional-Limit bleibt.
+            "max_conservative_notional_usd": max_conservative_notional_hints[symbol],
         }
         for symbol, snap in snapshots.items()
     }
