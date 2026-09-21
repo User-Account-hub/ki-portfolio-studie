@@ -37,15 +37,25 @@ from src.data_fetch import MarketSnapshot
 #
 # Prompt-Versionswechsel v10 (2026-09-21): expliziter Hinweis ergaenzt, dass
 # die von Claude vorgeschlagene Order-Groesse serverseitig NACH der
-# Entscheidung automatisch reskaliert wird (Volatilitaets-Skalierung
-# 0.5x-1.5x + optionaler Konviktions-Multiplikator, siehe
+# Entscheidung automatisch reskaliert bzw. gekappt wird - vier bereits
+# bestehende, Claude bisher unbekannte Mechanismen: (1) Volatilitaets-
+# Skalierung 0.5x-1.5x, (2) optionaler Konviktions-Multiplikator (beide
 # src/position_sizing.py, angewendet in execution.py VOR
-# risk_guardrails.evaluate_order) - dieser bereits seit 2026-09-19
-# bestehende Mechanismus war Claude bisher nicht bekannt. Ziel: Claude soll
-# seine vorgeschlagene Groesse selbst konservativer waehlen, insbesondere
-# bei ueberdurchschnittlich volatilen Titeln, damit die kombinierte,
-# skalierte Groesse nicht allein wegen dieser fuer Claude unsichtbaren
-# Reskalierung ueber ein Risikolimit rutscht.
+# risk_guardrails.evaluate_order, seit 2026-09-19), (3) Liquiditaetslimit
+# Kap. 6.13 (aktuell 10% des Tagesvolumens, risk_guardrails.
+# check_liquidity_limit, seit 2026-09-21) und (4) der gestufte Drawdown-
+# Schutz Kap. 6.8 (-10%/-15% Drawdown -> 75%/50% der sonst erlaubten
+# Positionsgroesse, NUR nach unten, risk_guardrails.
+# drawdown_position_size_factor, seit 2026-09-19). Ziel: Claude soll seine
+# vorgeschlagene Groesse selbst konservativer waehlen, insbesondere bei
+# ueberdurchschnittlich volatilen oder duenn gehandelten Titeln, damit die
+# kombinierte, mehrfach angepasste Groesse nicht allein wegen dieser fuer
+# Claude unsichtbaren Anpassungen ueber ein Risikolimit rutscht bzw.
+# unerwartet kleiner ausgefuehrt wird. (1)/(2) waren der urspruengliche
+# v10-Hinweis vom 2026-09-21; (3)/(4) wurden am selben Tag im selben
+# Hinweis ergaenzt, nachdem klar wurde, dass Claude ueber ALLE vier
+# nachtraeglichen Anpassungsmechanismen informiert sein sollte, nicht nur
+# die ersten beiden.
 #
 # BEWUSSTE AUSNAHME von der Governance-Regel "keine methodischen/
 # inhaltlichen Aenderungen am SYSTEM_PROMPT waehrend der laufenden
@@ -146,19 +156,30 @@ vermeiden.
 - Antworte AUSSCHLIESSLICH mit einem einzigen validen JSON-Objekt, ohne Markdown-Fences, \
 ohne Fliesstext davor oder danach.
 - WICHTIG (v10): Deine vorgeschlagene Order-Grösse (quantity/notional) wird NACH deiner \
-Entscheidung serverseitig automatisch reskaliert, BEVOR die oben genannten Risikolimiten \
-geprüft werden - das Ergebnis dieser Reskalierung siehst du selbst nicht. Zwei Faktoren \
-wirken multiplikativ: (1) Volatilitäts-Skalierung (Universums-Ø-Volatilität / \
+Entscheidung serverseitig automatisch reskaliert bzw. gekappt, BEVOR die oben genannten \
+Risikolimiten geprüft werden - das Ergebnis siehst du selbst nicht. Vier Mechanismen \
+wirken zusammen: (1) Volatilitäts-Skalierung (Universums-Ø-Volatilität / \
 Symbol-Volatilität, aus Feld "volatility_20d_annualized" je Titel im Marktdaten-Kontext, \
 geclippt auf 0.5x-1.5x) - überdurchschnittlich volatile Titel werden dadurch REDUZIERT, \
 unterdurchschnittlich volatile VERGRÖSSERT; (2) optional deine Konviktions-Einschätzung \
 (Feld "conviction": "high"/"medium"/"low", ×1.15/×1.0/×0.8 - bewusst schwach, da eine \
 Selbsteinschätzung deiner eigenen Sicherheit kein verlässliches, kalibriertes Signal ist; \
-kein Pflichtfeld, ohne Angabe wie "medium" behandelt). Berücksichtige das bei deiner \
-vorgeschlagenen Grösse: schlage tendenziell etwas konservativer vor, insbesondere bei \
-Titeln mit überdurchschnittlicher Volatilität, damit die kombinierte, skalierte Grösse \
-innerhalb der Risikolimiten bleibt, statt allein wegen dieser nachträglichen Skalierung \
-abgelehnt zu werden.
+kein Pflichtfeld, ohne Angabe wie "medium" behandelt); (3) Liquiditätslimit (Kap. 6.13): \
+eine Order darf max. den Anteil aus "risk_limits": "max_order_pct_of_avg_daily_volume" im \
+JSON-Kontext (aktuell 10%) des zuletzt bekannten Tagesvolumens ("volume" je Titel) \
+ausmachen - bei dünn gehandelten Titeln wird eine sonst zulässige Grösse dadurch \
+zusätzlich GEKAPPT; (4) gestufter Drawdown-Schutz (Kap. 6.8, NUR nach unten, nie nach \
+oben): ab -10% Portfolio-Drawdown seit dem historischen NAV-Höchststand wird die maximal \
+erlaubte Positionsgrösse auf 75%, ab -15% auf 50% reduziert (exakte aktuelle Werte: \
+"risk_limits": "drawdown_tier1_pct"/"drawdown_tier1_position_size_factor"/\
+"drawdown_tier2_pct"/"drawdown_tier2_position_size_factor" im JSON-Kontext) - deine Order \
+kann also auch dann kleiner ausgeführt werden als vorgeschlagen, wenn weder Volatilität \
+noch Liquidität dafür ursächlich sind. Berücksichtige das bei deiner vorgeschlagenen \
+Grösse: schlage tendenziell etwas konservativer vor, insbesondere bei Titeln mit \
+überdurchschnittlicher Volatilität oder geringem Handelsvolumen und bei bereits \
+eingetretenem Portfolio-Drawdown, damit die kombinierte, mehrfach angepasste Grösse \
+innerhalb der Risikolimiten bleibt, statt allein wegen dieser nachträglichen Anpassungen \
+abgelehnt oder unerwartet klein ausgeführt zu werden.
 
 JSON-Ausgabeschema:
 {

@@ -358,3 +358,27 @@ def test_system_prompt_mentions_post_hoc_order_size_rescaling():
 def test_system_prompt_advises_more_conservative_sizing_for_volatile_names():
     assert "konservativer" in SYSTEM_PROMPT
     assert "überdurchschnittlicher Volatilität" in SYSTEM_PROMPT
+
+
+def test_system_prompt_mentions_liquidity_limit_concrete_value_in_v10_hint():
+    """v10-Ergaenzung (2026-09-21, selber Tag): Claude muss im selben Hinweis
+    auch ueber das Liquiditaetslimit (Kap. 6.13) informiert werden, inkl. des
+    konkreten, aus risk_config.yaml uebernommenen Prozentwerts
+    (max_order_pct_of_avg_daily_volume = 0.10)."""
+    assert "max_order_pct_of_avg_daily_volume" in SYSTEM_PROMPT
+    assert "10%" in SYSTEM_PROMPT
+    assert "GEKAPPT" in SYSTEM_PROMPT
+
+
+def test_system_prompt_mentions_tiered_drawdown_position_size_reduction():
+    """v10-Ergaenzung: der gestufte Drawdown-Schutz (Kap. 6.8) - -10%/-15%
+    Drawdown reduziert die maximal erlaubte Positionsgroesse auf 75%/50% -
+    muss Claude im selben Hinweis erklaert werden, inkl. der konkreten Werte
+    aus risk_config.yaml (drawdown_tier1_pct=-0.10/-tier1_position_size_
+    factor=0.75, drawdown_tier2_pct=-0.15/-tier2_position_size_factor=0.50)."""
+    assert "drawdown_tier1_pct" in SYSTEM_PROMPT
+    assert "drawdown_tier2_pct" in SYSTEM_PROMPT
+    assert "-10%" in SYSTEM_PROMPT
+    assert "-15%" in SYSTEM_PROMPT
+    assert "75%" in SYSTEM_PROMPT
+    assert "50%" in SYSTEM_PROMPT
