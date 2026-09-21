@@ -104,6 +104,27 @@ def get_peak_nav(conn: sqlite3.Connection, portfolio_id: int) -> Optional[float]
     return row["peak"] if row is not None and row["peak"] is not None else None
 
 
+def get_nav_at_or_after(conn: sqlite3.Connection, portfolio_id: int, since: str) -> Optional[float]:
+    """Erster nav_history-NAV-Wert ab (>=) `since` - der korrekt am Kap.-6.3-
+    Reset-Zeitpunkt geankerte Startwert fuer die "offizielle Studie"
+    (siehe metrics.OFFICIAL_STUDY_START), statt des einmalig bei Portfolio-
+    Erstellung gesetzten `initial_cash_balance`, das nach einem Reset nicht
+    mehr zwangslaeufig zum tatsaechlichen Startkapital passt. None, falls
+    kein nav_history-Eintrag ab `since` existiert (reconstruct_nav_history
+    faellt dann auf `initial_cash_balance` zurueck) - `since` erwartet
+    dasselbe Format wie get_decisions_since/get_trades_since
+    ("YYYY-MM-DD HH:MM:SS", kein ISO-"T")."""
+    row = conn.execute(
+        """
+        SELECT nav FROM nav_history
+        WHERE portfolio_id = ? AND recorded_at >= ?
+        ORDER BY recorded_at ASC LIMIT 1
+        """,
+        (portfolio_id, since),
+    ).fetchone()
+    return row["nav"] if row is not None else None
+
+
 def get_portfolio(conn: sqlite3.Connection, name: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM portfolios WHERE name = ?", (name,)).fetchone()
     if row is None:

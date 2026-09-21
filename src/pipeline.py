@@ -733,13 +733,19 @@ def run(force: bool | None = None) -> None:
 
         portfolio_row = db.get_portfolio(conn, app_config.portfolio_name)
         open_position_rows = db.get_open_positions(conn, portfolio_row["id"])
-        all_trades = db.get_all_trades(conn, portfolio_row["id"])
+        # Kap.-6.3-Reset (siehe metrics.OFFICIAL_STUDY_START): die "offizielle"
+        # NAV-/Kennzahlen-Rekonstruktion nutzt nur noch Trades AB dem
+        # Reset-Zeitpunkt, nicht mehr db.get_all_trades seit Projektbeginn -
+        # Pilotphase-Trades bleiben in der DB, fliessen aber nicht mehr ein.
+        official_trades = db.get_trades_since(
+            conn, portfolio_row["id"], metrics.OFFICIAL_STUDY_START.strftime("%Y-%m-%d %H:%M:%S")
+        )
 
         log.info("Berechne Metriken...")
         nav_history = metrics.reconstruct_nav_history(
             conn,
             portfolio_row,
-            all_trades,
+            official_trades,
             watchlist_underlyings,
             portfolio_row["benchmark_symbol"],
             momentum_universe_symbols=momentum_universe_symbols,

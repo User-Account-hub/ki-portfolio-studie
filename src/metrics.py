@@ -46,7 +46,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from src.db import get_peak_nav
+from src.db import get_nav_at_or_after, get_peak_nav
 from src.momentum_baseline import reconstruct_momentum_baseline
 from src.risk_guardrails import OpenPosition, compute_nav
 from src.segment_basket import SEGMENT_BASKET_SYMBOLS, reconstruct_segment_basket
@@ -60,6 +60,20 @@ CLOSE_SIDES = {"sell": "long", "cover": "short"}
 # hart kodiert, direkt neben dem Code, der ihn auswertet.
 PHASE2_START = pd.Timestamp("2026-09-10")
 PHASE2_PERIODS_PER_YEAR = 252.0
+
+# Kap. 6.3 Portfolio-Reset (2026-09-21, siehe RESET_2026-09-21.md / Commit
+# 673064c): Pilotphase (05.09.-20.09.) endet hier, die "offizielle" Studie
+# beginnt neu bei NAV=1'000'000 (0 offene Positionen). reconstruct_nav_history
+# rekonstruiert die NAV-Zeitreihe ab hier ausschliesslich aus Trades ab
+# diesem Zeitpunkt (siehe pipeline.py-Aufrufstelle, db.get_trades_since) und
+# ankert initial_cash/initial_nav auf den tatsaechlichen Reset-NAV
+# (db.get_nav_at_or_after), nicht mehr auf das statische, nur einmal bei
+# Portfolio-Erstellung gesetzte `initial_cash_balance`. Pilotphase-Trades/
+# -Decisions bleiben vollstaendig in der DB erhalten (Kap. 6.3), fliessen
+# aber nicht mehr in die offizielle NAV-/Kennzahlen-Rekonstruktion ein.
+# Analog zu PHASE2_START: bewusst hart kodiert, ein einmaliges historisches
+# Ereignis, kein Config-Wert.
+OFFICIAL_STUDY_START = pd.Timestamp("2026-09-21 13:32:06")
 
 # 2026-09-17: realistische Risk-free-Rate-Annahme fuer die Sharpe-Ratio
 # (vorher fix 0.0 - unterstellte damit, dass "risikofrei" 0% Rendite
@@ -111,8 +125,10 @@ class NavHistory:
     # Checkpoints/Jahr, abgeleitet aus den `freqs` von reconstruct_nav_history -
     # treibt die Annualisierung in compute_metrics (Volatilitaet, Sharpe).
     periods_per_year: float
-    # Bugfix 2026-09-12: das echte Startkapital der Studie
-    # (portfolio_row["initial_cash_balance"]), NICHT dasselbe wie `nav[0]`.
+    # Bugfix 2026-09-12: das echte Startkapital der "offiziellen Studie" -
+    # seit dem Kap.-6.3-Reset (2026-09-21) der dort persistierte
+    # nav_history-Wert (db.get_nav_at_or_after, Fallback
+    # portfolio_row["initial_cash_balance"]), NICHT dasselbe wie `nav[0]`.
     # `nav[0]` ist nur der erste *Checkpoint* der in diesem Lauf rekonstruierten
     # Zeitreihe - je nach Checkpoint-Dichte (siehe Phase 1/2-Regimewechsel)
     # kann das ein beliebiger spaeterer Zeitpunkt nach dem ersten Trade sein,
@@ -257,6 +273,7 @@ def reconstruct_nav_history(
     momentum_universe_symbols: list[str] | None = None,
     freqs: tuple[str, ...] = ("W-MON", "W-THU"),
     phase2_start: pd.Timestamp = PHASE2_START,
+    official_start: pd.Timestamp = OFFICIAL_STUDY_START,
 ) -> NavHistory:
     """`freqs` are pandas weekly offset aliases, one per weekday the pipeline
     ran during Phase 1 (Monday + Thursday, matching the pre-2026-09-10 cron
@@ -273,14 +290,27 @@ def reconstruct_nav_history(
     `momentum_universe_symbols` (Thesis Kap. 6.9) is the equity universe the
     regelbasierte Momentum-Baseline ranks/rebalances over - independent of
     the AI portfolio's actual trades, computed purely from price data (see
-    src/momentum_baseline.py)."""
-    initial_cash = portfolio_row["initial_cash_balance"]
+    src/momentum_baseline.py).
+
+    `official_start` (Kap. 6.3 Reset, siehe OFFICIAL_STUDY_START-Kommentar):
+    `trades` muss bereits vom Aufrufer auf `executed_at >= official_start`
+    gefiltert sein (db.get_trades_since) - diese Funktion filtert nicht
+    selbst nach, sondern verankert lediglich `initial_cash`/`start` darauf.
+    Der echte, geankerte Startwert kommt aus db.get_nav_at_or_after (der beim
+    Reset persistierte nav_history-Eintrag); nur falls dort noch nichts
+    vorliegt (z.B. in Tests ohne nav_history-Daten), faellt das auf das
+    statische `initial_cash_balance` zurueck."""
+    since = official_start.strftime("%Y-%m-%d %H:%M:%S")
+    initial_cash = (
+        get_nav_at_or_after(conn, portfolio_row["id"], since) or portfolio_row["initial_cash_balance"]
+    )
     periods_per_year = 52 * len(freqs)
     momentum_universe_symbols = momentum_universe_symbols or []
-    # `conn` wird hier (bisher ungenutzt) fuer genau diesen Zweck gebraucht:
-    # der Circuit-Breaker (risk_guardrails.py, Kap. 6.8) pflegt bereits den
-    # wahren historischen NAV-Hoechststand ueber alle Laeufe hinweg - den
-    # wiederverwenden wir fuer max_drawdown, statt ihn separat zu bestimmen.
+    # Der Circuit-Breaker (risk_guardrails.py, Kap. 6.8) pflegt bereits den
+    # wahren historischen NAV-Hoechststand ueber alle Laeufe hinweg (bewusst
+    # INKLUSIVE Pilotphase, siehe RESET_2026-09-21.md-Hinweis zum
+    # Circuit-Breaker) - den wiederverwenden wir fuer max_drawdown, statt ihn
+    # separat zu bestimmen.
     historical_peak_nav = max(initial_cash, get_peak_nav(conn, portfolio_row["id"]) or initial_cash)
 
     if not trades:
@@ -297,7 +327,16 @@ def reconstruct_nav_history(
         )
 
     snapshots = _replay_ledger(trades, initial_cash)
-    start = snapshots[0]["timestamp"].normalize()
+    # Bugfix 2026-09-21 (Kap.-6.3-Reset): vorher war `start` der Zeitpunkt
+    # des ERSTEN TRADES in `trades` - lag der Reset zeitlich vor dem ersten
+    # danach ausgefuehrten Trade (z.B. weil Orders zunaechst wegen
+    # Risk-Guardrails abgelehnt wurden), verschob das faelschlich den
+    # Studienbeginn fuer Checkpoints/Benchmark-Ankerung auf diesen spaeteren
+    # Zeitpunkt statt auf den echten Reset-Zeitpunkt. `official_start` ist
+    # der tatsaechliche, feststehende Studienbeginn (siehe
+    # OFFICIAL_STUDY_START); `trades` ist laut Docstring bereits darauf
+    # gefiltert, jeder Snapshot liegt also ohnehin auf/nach `official_start`.
+    start = official_start.normalize()
     end = pd.Timestamp.today().normalize()
 
     phase1_end = min(end, phase2_start)

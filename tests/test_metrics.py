@@ -516,6 +516,42 @@ def test_reconstruct_nav_history_no_trades_includes_flat_qqq_line():
     assert result.qqq_normalized == [100_000.0]
 
 
+def test_reconstruct_nav_history_anchors_on_reset_nav_not_stale_pilot_phase_history():
+    """Bugfix 2026-09-21 (Kap.-6.3-Reset): reproduziert den gemeldeten Fall
+    vom 21.09. - der Aufrufer uebergibt bereits (via db.get_trades_since)
+    keine Trades seit dem Reset (alle heutigen Order-Vorschlaege wurden wegen
+    Notional-Limit abgelehnt), aber die DB hat noch eine viel hoehere
+    Pilotphase-nav_history-Zeile VOR dem Reset. `initial_cash`/`initial_nav`
+    muessen trotzdem auf den Reset-NAV (1'000'000) verankert sein, NICHT auf
+    das Pilotphase-Zwischenhoch UND NICHT auf portfolio_row["initial_cash_balance"]."""
+    import sqlite3
+
+    from src.metrics import OFFICIAL_STUDY_START, reconstruct_nav_history
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE nav_history (id INTEGER PRIMARY KEY, portfolio_id INTEGER, recorded_at TEXT, nav REAL)"
+    )
+    conn.execute(
+        "INSERT INTO nav_history (portfolio_id, recorded_at, nav) VALUES (1, '2026-09-17 15:15:35', 1058900.0)"
+    )  # Pilotphase-Zwischenhoch, VOR dem Reset
+    conn.execute(
+        "INSERT INTO nav_history (portfolio_id, recorded_at, nav) VALUES (1, ?, 1000000.0)",
+        (OFFICIAL_STUDY_START.strftime("%Y-%m-%d %H:%M:%S"),),
+    )  # der Reset-Eintrag selbst
+    conn.commit()
+
+    # portfolio_row["initial_cash_balance"] absichtlich abweichend (100_000)
+    # gesetzt, um sicherzustellen, dass NICHT dieser statische Fallback-Wert
+    # verwendet wird, solange ein nav_history-Eintrag ab dem Reset existiert.
+    portfolio_row = {"id": 1, "initial_cash_balance": 100_000.0}
+    result = reconstruct_nav_history(conn, portfolio_row, trades=[], watchlist_underlyings={}, benchmark_symbol="SPY")
+
+    assert result.nav == [1_000_000.0]
+    assert result.initial_nav == 1_000_000.0
+
+
 # --- Segment-ETF-Korb (Kap. 6.9 Erweiterung, 2026-09-21) ----------------------
 
 

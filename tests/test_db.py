@@ -144,6 +144,41 @@ def test_get_peak_nav_tracks_true_historical_high_not_just_latest_two_values():
     assert naive_result.approved  # die alte Naeherung haette es faelschlich durchgelassen
 
 
+# --- get_nav_at_or_after (Kap.-6.3-Reset-Ankerung) ------------------------------
+
+
+def test_get_nav_at_or_after_returns_none_without_matching_row():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    assert db.get_nav_at_or_after(conn, portfolio_id, "2026-09-21 00:00:00") is None
+
+
+def test_get_nav_at_or_after_ignores_rows_before_since():
+    """Pilotphase-nav_history-Zeilen (vor dem Reset) duerfen den Anker nicht
+    verfaelschen - nur Zeilen ab (>=) `since` zaehlen."""
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn, initial_cash=100_000.0)
+    db.record_nav(conn, portfolio_id, 150_000.0)  # Pilotphase-Zwischenhoch
+    conn.execute("UPDATE nav_history SET recorded_at = ?", ("2026-09-15 10:00:00",))
+    conn.commit()
+
+    assert db.get_nav_at_or_after(conn, portfolio_id, "2026-09-21 00:00:00") is None
+
+
+def test_get_nav_at_or_after_returns_first_row_at_or_after_since():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn, initial_cash=100_000.0)
+    db.record_nav(conn, portfolio_id, 150_000.0)  # Pilotphase, wird spaeter auf vorher datiert
+    conn.execute("UPDATE nav_history SET recorded_at = '2026-09-15 10:00:00' WHERE nav = 150000.0")
+    db.record_nav(conn, portfolio_id, 1_000_000.0)  # Reset-Eintrag
+    conn.execute("UPDATE nav_history SET recorded_at = '2026-09-21 13:32:06' WHERE nav = 1000000.0")
+    db.record_nav(conn, portfolio_id, 1_012_060.50)  # spaeterer Lauf nach dem Reset
+    conn.execute("UPDATE nav_history SET recorded_at = '2026-09-22 15:11:00' WHERE nav = 1012060.50")
+    conn.commit()
+
+    assert db.get_nav_at_or_after(conn, portfolio_id, "2026-09-21 00:00:00") == 1_000_000.0
+
+
 # --- record_nav --------------------------------------------------------------------
 
 
