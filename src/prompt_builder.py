@@ -34,6 +34,36 @@ from src.data_fetch import MarketSnapshot
 # ist; qualitative (nicht kursbasierte) Randbedingungen werden dokumentiert,
 # aber nicht automatisch verifiziert - siehe dortigen Modul-Docstring fuer
 # die Begruendung, warum eine vorgetaeuschte Automatisierung vermieden wird.
+#
+# Prompt-Versionswechsel v10 (2026-09-21): expliziter Hinweis ergaenzt, dass
+# die von Claude vorgeschlagene Order-Groesse serverseitig NACH der
+# Entscheidung automatisch reskaliert wird (Volatilitaets-Skalierung
+# 0.5x-1.5x + optionaler Konviktions-Multiplikator, siehe
+# src/position_sizing.py, angewendet in execution.py VOR
+# risk_guardrails.evaluate_order) - dieser bereits seit 2026-09-19
+# bestehende Mechanismus war Claude bisher nicht bekannt. Ziel: Claude soll
+# seine vorgeschlagene Groesse selbst konservativer waehlen, insbesondere
+# bei ueberdurchschnittlich volatilen Titeln, damit die kombinierte,
+# skalierte Groesse nicht allein wegen dieser fuer Claude unsichtbaren
+# Reskalierung ueber ein Risikolimit rutscht.
+#
+# BEWUSSTE AUSNAHME von der Governance-Regel "keine methodischen/
+# inhaltlichen Aenderungen am SYSTEM_PROMPT waehrend der laufenden
+# offiziellen Studie" (Kap. 6.3, Studienstart 2026-09-21 - vgl. den
+# analogen README.md-Hinweis bei der News-Feed-Aggregation, die bewusst
+# noch VOR Studienstart eingefuehrt wurde, um genau das zu vermeiden):
+# diese Aenderung erfolgt stattdessen AM ERSTEN offiziellen Studientag
+# selbst. Begruendung fuer die Ausnahme: am 2026-09-21 wurden im ersten
+# offiziellen Lauf alle drei vorgeschlagenen Kauf-Orders (TSM, ASML, CCJ;
+# siehe reports/report_2026-09-21_160956.md) AUSSCHLIESSLICH wegen dieser
+# fuer Claude unsichtbaren nachtraeglichen Skalierung (1.50x Vol- x
+# 1.00-1.15x Konviktions-Faktor) ueber das 5%-NAV-Trade-Notional-Limit
+# (Kap. 6.8) gehoben und deshalb abgelehnt - waehrend die von Claude selbst
+# vorgeschlagene, unskalierte Groesse jeweils innerhalb des Limits lag. Das
+# ist kein Eingriff in die Anlagelogik/-kriterien (Anforderungen 1-7 unten
+# bleiben unveraendert) und aendert keinen bestehenden Mechanismus - es
+# stellt Claude lediglich Wissen ueber eine Regel bereit, die serverseitig
+# ohnehin schon seit 2026-09-19 gilt.
 SYSTEM_PROMPT = """\
 Du bist der Portfolio-Analyst einer KI-gestützten Portfolio-Fallstudie im Paper-Trading-Modus \
 (kein echtes Geld). Du erhältst den aktuellen Portfolio-Zustand und Marktdaten für ein festes \
@@ -115,11 +145,20 @@ im Universum und "volume" je Titel im Marktdaten-Kontext), um unnötige Ablehnun
 vermeiden.
 - Antworte AUSSCHLIESSLICH mit einem einzigen validen JSON-Objekt, ohne Markdown-Fences, \
 ohne Fliesstext davor oder danach.
-- Optional kannst du je Kauf-/Short-Order eine Konviktions-Einschätzung angeben (Feld \
-"conviction": "high"/"medium"/"low"). Sie skaliert die Positionsgrösse serverseitig NUR \
-LEICHT (high ×1.15, medium ×1.0, low ×0.8) - bewusst schwach, da eine Selbsteinschätzung \
-deiner eigenen Sicherheit kein verlässliches, kalibriertes Signal ist. Kein Pflichtfeld; \
-ohne Angabe wird wie "medium" (kein Effekt) behandelt.
+- WICHTIG (v10): Deine vorgeschlagene Order-Grösse (quantity/notional) wird NACH deiner \
+Entscheidung serverseitig automatisch reskaliert, BEVOR die oben genannten Risikolimiten \
+geprüft werden - das Ergebnis dieser Reskalierung siehst du selbst nicht. Zwei Faktoren \
+wirken multiplikativ: (1) Volatilitäts-Skalierung (Universums-Ø-Volatilität / \
+Symbol-Volatilität, aus Feld "volatility_20d_annualized" je Titel im Marktdaten-Kontext, \
+geclippt auf 0.5x-1.5x) - überdurchschnittlich volatile Titel werden dadurch REDUZIERT, \
+unterdurchschnittlich volatile VERGRÖSSERT; (2) optional deine Konviktions-Einschätzung \
+(Feld "conviction": "high"/"medium"/"low", ×1.15/×1.0/×0.8 - bewusst schwach, da eine \
+Selbsteinschätzung deiner eigenen Sicherheit kein verlässliches, kalibriertes Signal ist; \
+kein Pflichtfeld, ohne Angabe wie "medium" behandelt). Berücksichtige das bei deiner \
+vorgeschlagenen Grösse: schlage tendenziell etwas konservativer vor, insbesondere bei \
+Titeln mit überdurchschnittlicher Volatilität, damit die kombinierte, skalierte Grösse \
+innerhalb der Risikolimiten bleibt, statt allein wegen dieser nachträglichen Skalierung \
+abgelehnt zu werden.
 
 JSON-Ausgabeschema:
 {

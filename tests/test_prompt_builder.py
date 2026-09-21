@@ -337,3 +337,24 @@ def test_build_user_prompt_includes_liquidity_limit_in_risk_limits():
 
 def test_system_prompt_mentions_liquidity_limit():
     assert "Liquiditätslimit" in SYSTEM_PROMPT
+
+
+# --- Post-hoc Vol-/Konviktions-Reskalierung (v10, 2026-09-21) -----------------
+
+
+def test_system_prompt_mentions_post_hoc_order_size_rescaling():
+    """v10: Claude muss explizit darauf hingewiesen werden, dass seine
+    vorgeschlagene Order-Groesse NACH seiner Entscheidung noch reskaliert
+    wird (Volatilitaets-Band 0.5x-1.5x, siehe src/position_sizing.py) -
+    Grund war, dass am 2026-09-21 drei Kauf-Orders (TSM, ASML, CCJ)
+    ausschliesslich wegen dieser fuer Claude unsichtbaren Reskalierung ueber
+    das Trade-Notional-Limit gehoben und abgelehnt wurden (siehe
+    Code-Kommentar bei SYSTEM_PROMPT)."""
+    assert "reskaliert" in SYSTEM_PROMPT
+    assert "0.5x-1.5x" in SYSTEM_PROMPT
+    assert "volatility_20d_annualized" in SYSTEM_PROMPT
+
+
+def test_system_prompt_advises_more_conservative_sizing_for_volatile_names():
+    assert "konservativer" in SYSTEM_PROMPT
+    assert "überdurchschnittlicher Volatilität" in SYSTEM_PROMPT
