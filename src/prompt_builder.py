@@ -111,6 +111,30 @@ from src.order_schema import ConvictionLevel
 # Eingriff in die Anlagelogik/-kriterien (Anforderungen 1-7 unten
 # unveraendert) - reine Praezisierung einer bereits als Ausnahme
 # akzeptierten Transparenz-Ergaenzung.
+#
+# Prompt-Versionswechsel v12 (2026-09-21): kurzer Hinweis ergaenzt, dass bei
+# JEDEM ausgefuehrten Trade eine feste Transaktionskosten-Pauschale
+# (Spread/Slippage-Naeherung, "risk_limits": "transaction_cost_pct_of_
+# notional" im JSON-Kontext, aktuell 0.1% des Notional) vom Cash abgezogen
+# wird - UNABHAENGIG von der Handelsrichtung (buy/sell/short/cover), siehe
+# execution.py._apply_fill_to_db. Kein neues Limit, keine Guardrail-
+# Aenderung (kann keine Order ablehnen) - reiner Kontext, damit Claude bei
+# haeufigem Handeln die kumulierten Kosten strategisch mitbedenken kann
+# (z.B. bei kurzfristigem Hin- und Her-Handeln ohne klare These).
+#
+# BEWUSSTE AUSNAHME von derselben Governance-Regel wie v10/v11 oben - DRITTE
+# Ausnahme an diesem Tag (2026-09-21), aus demselben Grund: v10/v11 hatten
+# bereits dieselbe Kategorie "Claude unbekannte, unsichtbare Backend-Logik"
+# fuer die Positionsgroessen-Skalierung (Vol-/Konviktions-Faktor,
+# Liquiditaetslimit, Drawdown-Stufen) behandelt - v12 ergaenzt der
+# Vollstaendigkeit halber denselben blinden Fleck fuer die
+# Transaktionskosten-Pauschale, die genauso seit 2026-09-17 unveraendert
+# serverseitig existiert (siehe risk_config.yaml), aber bisher weder im
+# SYSTEM_PROMPT-Text noch im JSON-Kontext erwaehnt war (explizit auf
+# Nachfrage am 2026-09-21 verifiziert). Kein Eingriff in die Anlagelogik/
+# -kriterien (Anforderungen 1-7 unten unveraendert) und keine
+# Guardrail-Aenderung - reine Transparenz-Vervollstaendigung derselben
+# bereits akzeptierten Kategorie.
 SYSTEM_PROMPT = """\
 Du bist der Portfolio-Analyst einer KI-gestützten Portfolio-Fallstudie im Paper-Trading-Modus \
 (kein echtes Geld). Du erhältst den aktuellen Portfolio-Zustand und Marktdaten für ein festes \
@@ -227,6 +251,12 @@ bleibt. Für eine buy/short-Order gilt: dein vorgeschlagener notional-Wert bzw. 
 quantity × "last_price" DARF "max_conservative_notional_usd" NICHT ÜBERSCHREITEN. Das \
 Liquiditäts- und Drawdown-Limit aus Punkt (3)/(4) sind darin NICHT eingerechnet - bei \
 dünn gehandelten Titeln oder während eines Portfolio-Drawdowns bleib zusätzlich darunter.
+- TRANSAKTIONSKOSTEN (v12): Bei JEDEM ausgeführten Trade wird eine feste Kosten-Pauschale \
+(Spread/Slippage-Näherung, Feld "risk_limits": "transaction_cost_pct_of_notional" im \
+JSON-Kontext, aktuell 0.1% des Notional) vom Cash abgezogen - UNABHÄNGIG von der \
+Handelsrichtung (Kauf, Verkauf, Short, Cover). Kein Limit und keine Ablehnungsursache, \
+nur Kontext: berücksichtige die kumulierten Kosten strategisch, insbesondere bei \
+häufigem Hin- und Her-Handeln ohne klar unterscheidbare neue These.
 
 JSON-Ausgabeschema:
 {
@@ -396,6 +426,10 @@ def build_user_prompt(
         # Kap. 6.13 (2026-09-21, siehe risk_guardrails.check_liquidity_limit) -
         # max. Anteil der Order-Menge am Tagesvolumen ("volume" je Titel oben).
         "max_order_pct_of_avg_daily_volume": risk_config.max_order_pct_of_avg_daily_volume,
+        # v12 (2026-09-21, siehe SYSTEM_PROMPT-Kommentar) - feste Spread/
+        # Slippage-Pauschale, siehe execution.py._apply_fill_to_db. KEIN
+        # Limit/Guardrail (kann keine Order ablehnen), rein informativ.
+        "transaction_cost_pct_of_notional": risk_config.transaction_cost_pct_of_notional,
     }
 
     payload = {

@@ -458,3 +458,28 @@ def test_build_user_prompt_max_conservative_notional_uses_conviction_only_withou
 
     expected = (0.05 * 1_000_000.0) / 1.15
     assert payload["market_data"]["NOVOL"]["max_conservative_notional_usd"] == pytest.approx(expected)
+
+
+# --- v12: Transaktionskosten-Pauschale im Prompt (2026-09-21) ----------------
+
+
+def test_build_user_prompt_includes_transaction_cost_pct_in_risk_limits():
+    """v12: Claude muss die tatsaechliche, aus risk_config.yaml stammende
+    Transaktionskosten-Pauschale strukturiert im JSON-Kontext sehen (nicht
+    nur als hartkodierten Text im SYSTEM_PROMPT, der von risk_config.yaml
+    abweichen/veralten koennte)."""
+    prompt = _build_minimal_prompt()
+    payload = json.loads(prompt.split("(JSON):\n\n", 1)[1].split("\n\nErstelle")[0])
+    assert payload["risk_limits"]["transaction_cost_pct_of_notional"] == pytest.approx(0.001)
+
+
+def test_system_prompt_mentions_transaction_cost_pauschale_v12():
+    """v12 (2026-09-21): Reaktion auf explizite Nachfrage, ob Claude von der
+    seit 2026-09-17 bestehenden Transaktionskosten-Pauschale weiss - bisher
+    war das genau wie die Positionsgroessen-Skalierung vor v10 reine
+    unsichtbare Backend-Logik. Claude muss jetzt sowohl auf das Vorhandensein
+    der Pauschale als auch darauf hingewiesen werden, dass sie fuer JEDE
+    Handelsrichtung (Kauf, Verkauf, Short, Cover) gilt."""
+    assert "transaction_cost_pct_of_notional" in SYSTEM_PROMPT
+    assert "UNABHÄNGIG von der" in SYSTEM_PROMPT
+    assert "Kauf, Verkauf, Short, Cover" in SYSTEM_PROMPT
