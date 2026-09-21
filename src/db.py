@@ -250,6 +250,21 @@ def insert_decision(
     return cur.lastrowid
 
 
+def link_trades_to_decision(conn: sqlite3.Connection, trade_ids: list[int], decision_id: int) -> None:
+    """Verknuepft bereits existierende trades-Zeilen nachtraeglich mit einer
+    decisions-Zeile (setzt trades.decision_id). Extrahiert 2026-09-21 aus
+    execution.execute_proposed_orders (dort seit jeher genutzt, um Trades
+    ERST nach Abschluss der gesamten Order-Liste mit dem einen gebuendelten
+    decisions-Eintrag zu verknuepfen), damit dieselbe Logik auch fuer eine
+    nachtraegliche Audit-Vervollstaendigung wiederverwendbar ist (siehe
+    17-Punkte-Audit Fund #3: verwaiste Trades nach einem Absturz mitten in
+    einer Order-Liste, VOR dem Fix vom 2026-09-21 real eingetreten und hier
+    nachtraeglich dokumentiert). No-op fuer eine leere `trade_ids`-Liste."""
+    for trade_id in trade_ids:
+        conn.execute("UPDATE trades SET decision_id = ? WHERE id = ?", (decision_id, trade_id))
+    conn.commit()
+
+
 def upsert_open_position(
     conn: sqlite3.Connection,
     portfolio_id: int,

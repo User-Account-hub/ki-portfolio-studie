@@ -179,6 +179,74 @@ def test_get_nav_at_or_after_returns_first_row_at_or_after_since():
     assert db.get_nav_at_or_after(conn, portfolio_id, "2026-09-21 00:00:00") == 1_000_000.0
 
 
+# --- link_trades_to_decision (17-Punkte-Audit Fund #3, 2026-09-21) -------------
+
+
+def test_link_trades_to_decision_sets_decision_id_on_given_trades():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    t1 = db.insert_trade(
+        conn, portfolio_id=portfolio_id, position_id=None, decision_id=None,
+        symbol="AAPL", instrument_type="equity", side="buy", quantity=1, price=100.0,
+        order_type="market", broker_order_id=None, source="alpaca", status="filled",
+    )
+    t2 = db.insert_trade(
+        conn, portfolio_id=portfolio_id, position_id=None, decision_id=None,
+        symbol="MSFT", instrument_type="equity", side="buy", quantity=1, price=200.0,
+        order_type="market", broker_order_id=None, source="alpaca", status="filled",
+    )
+    decision_id = db.insert_decision(
+        conn, portfolio_id=portfolio_id, model="test", prompt="p", raw_response=None,
+        proposed_orders=None, risk_check_result=None, rationale=None,
+        forced_action=False, approved=True, executed=True,
+    )
+
+    db.link_trades_to_decision(conn, [t1, t2], decision_id)
+
+    rows = conn.execute("SELECT id, decision_id FROM trades ORDER BY id").fetchall()
+    assert [r["decision_id"] for r in rows] == [decision_id, decision_id]
+
+
+def test_link_trades_to_decision_only_touches_given_trade_ids():
+    """Andere, nicht uebergebene Trades duerfen unangetastet bleiben - wichtig
+    fuer eine nachtraegliche Audit-Vervollstaendigung einzelner verwaister
+    Trades, ohne unbeteiligte Trades versehentlich mitzuverknuepfen."""
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    t1 = db.insert_trade(
+        conn, portfolio_id=portfolio_id, position_id=None, decision_id=None,
+        symbol="AAPL", instrument_type="equity", side="buy", quantity=1, price=100.0,
+        order_type="market", broker_order_id=None, source="alpaca", status="filled",
+    )
+    t2 = db.insert_trade(
+        conn, portfolio_id=portfolio_id, position_id=None, decision_id=None,
+        symbol="MSFT", instrument_type="equity", side="buy", quantity=1, price=200.0,
+        order_type="market", broker_order_id=None, source="alpaca", status="filled",
+    )
+    decision_id = db.insert_decision(
+        conn, portfolio_id=portfolio_id, model="test", prompt="p", raw_response=None,
+        proposed_orders=None, risk_check_result=None, rationale=None,
+        forced_action=False, approved=True, executed=True,
+    )
+
+    db.link_trades_to_decision(conn, [t1], decision_id)
+
+    rows = {r["id"]: r["decision_id"] for r in conn.execute("SELECT id, decision_id FROM trades")}
+    assert rows[t1] == decision_id
+    assert rows[t2] is None
+
+
+def test_link_trades_to_decision_empty_list_is_noop():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    decision_id = db.insert_decision(
+        conn, portfolio_id=portfolio_id, model="test", prompt="p", raw_response=None,
+        proposed_orders=None, risk_check_result=None, rationale=None,
+        forced_action=False, approved=True, executed=True,
+    )
+    db.link_trades_to_decision(conn, [], decision_id)  # darf nicht crashen
+
+
 # --- record_nav --------------------------------------------------------------------
 
 

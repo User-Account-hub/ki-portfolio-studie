@@ -544,11 +544,11 @@ def execute_proposed_orders(
         executed=any(r.trade_id is not None for r in results),
     )
 
-    # Trades nachträglich mit der Decision verknüpfen.
-    for r in results:
-        if r.trade_id is not None:
-            conn.execute("UPDATE trades SET decision_id = ? WHERE id = ?", (decision_id, r.trade_id))
-    conn.commit()
+    # Trades nachträglich mit der Decision verknüpfen (siehe
+    # db.link_trades_to_decision fuer die Begruendung dieser Reihenfolge).
+    db.link_trades_to_decision(
+        conn, [r.trade_id for r in results if r.trade_id is not None], decision_id
+    )
 
     return results
 
