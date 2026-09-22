@@ -440,6 +440,74 @@ reports/                    Generierte Markdown-Reports (werden versioniert)
   benannt (siehe v16/Fund #6, der denselben Denominator nur beim
   Kurs-Fallback angefasst hat) - bleibt als mögliches künftiges
   Audit-Thema offen.
+- **Letzte 6 unkritische Audit-Punkte (2026-09-22, `v18`, Sammel-Ausnahme):**
+  alle ohne Risikorelevanz - reine Robustheits-/Dokumentations-/Test-
+  Verbesserungen, zwei davon bewusst NICHT geändert (siehe unten). Wie bei
+  `v15` ein einziger Durchgang, aber jeder Punkt ein eigener Commit.
+  - **Fund #4:** ein unerwarteter Fehler IM Short-Stop-Loss-SWEEP SELBST
+    (nicht nur bei einem einzelnen Pflicht-Cover, der bereits abgefangen
+    wird) liess vorher den GESAMTEN Lauf ungefangen abstürzen, bevor
+    überhaupt ein Report geschrieben wurde - der dokumentationspflichtige
+    Sweep fehlte dann komplett statt sichtbar zu sein. Neuer, unit-
+    testbarer Helper `pipeline._run_short_stop_loss_sweep_safely` (analog
+    zu `_run_data_quality_checks`/`_check_boundary_conditions`) fängt den
+    Fehler ab; `reporting.generate_report` bekommt einen neuen
+    `stop_loss_sweep_error`-Parameter und zeigt ihn als eigenen,
+    prominenten Abschnitt.
+  - **Fund #12:** `boundary_conditions.evaluate_boundary_conditions` prüfte
+    bei strukturierten Produkten AUSSCHLIESSLICH den (nie vorhandenen)
+    Kurs des Produkts selbst - eine price_above/price_below-Randbedingung
+    blieb dadurch permanent offen, unabhängig vom tatsächlichen
+    Kursverlauf des Basiswerts. Jetzt derselbe Basiswert-Kurs-Fallback wie
+    bei `execution.resolve_price`/`risk_guardrails.leveraged_notional`
+    (v16); `db.get_open_boundary_conditions` liefert dafür
+    `underlying_symbol` per JOIN gegen `positions` mit (kein
+    Schema-Wechsel nötig). Der Report zeigt jetzt zusätzlich, wenn eine
+    Randbedingung über den Basiswert approximiert wurde.
+  - **Fund #13:** README korrigiert - der Short-Stop-Loss "20%" war als
+    fixer Fakt dargestellt, ist aber der konfigurierbare
+    `short_stop_loss_pct` in `risk_config.yaml` (mit `v13`-Hinweis auf den
+    individuellen Override).
+  - **Fund #15:** `tests/test_stress_test_prompt.py` ergänzt (analog zu
+    `test_deep_reflection_prompt.py`) - `build_stress_test_user_prompt`
+    war die einzige Prompt-Bau-Funktion ohne eigene Testdatei.
+  - **Fund #16 (bewusst NICHT geändert):** die drei yfinance-Downloads pro
+    Lauf (`data_fetch.fetch_market_snapshots`/`fetch_price_histories` in
+    `_run_data_quality_checks`, beide 90-Tage-Fenster über teils
+    überlappende Symbole, sowie `metrics.py`s eigener Download für die
+    NAV-Rekonstruktion) liessen sich bei genauerer Prüfung NICHT risikofrei
+    zusammenführen: `fetch_price_histories`s eigener Docstring markiert die
+    Trennung von `fetch_market_snapshots` bereits als BEWUSSTE
+    Entscheidung ("already-incident-prone" - yfinances Multi-Ticker-
+    DataFrame-Form ist eine bekannte Fehlerquelle) statt versehentlicher
+    Duplikation; ein Zusammenführen würde ausserdem eine subtile
+    Divergenz einführen (`fetch_market_snapshots` verwirft ein Symbol
+    komplett, wenn dessen "Volume"-Spalte fehlt/einen KeyError wirft -
+    `fetch_price_histories` prüft nur "Close" und wäre davon nicht
+    betroffen), was welche Symbole im Datenqualitäts-Report auftauchen
+    unbemerkt ändern könnte. `metrics.py`s Download deckt ausserdem einen
+    fundamental anderen Zeitraum ab (seit Projektstart, nicht 90 Tage
+    rollierend) und ist damit architektonisch nicht sinnvoll
+    zusammenführbar. Bleibt wie dokumentiert bestehen statt einer
+    unsicheren Änderung.
+  - **Fund #17 (bewusst NICHT geändert):** `execution.execute_proposed_orders`
+    fragt `db.get_open_positions`/`portfolio_row` (Cash) pro Order neu ab
+    (Zeilen rund um `build_context`/`db.get_portfolio` im Order-Loop) -
+    das ist KEINE Ineffizienz, sondern korrektheitskritisch: jede Order
+    innerhalb desselben Laufs muss die Kap.-6.8-Guardrails auf Basis des
+    kumulierten Cash-/Positionsstands ALLER vorherigen Orders DESSELBEN
+    Laufs prüfen (siehe Korrelations-Beobachtungs-Kommentar direkt im
+    Code). Eine In-Memory-Optimierung müsste die exakte
+    Positions-/Cash-Mutationslogik von `db.upsert_open_position`/
+    `reduce_or_close_position`/`update_cash_balance` (gewichteter
+    Durchschnitts-Einstandspreis, Teil-/Vollschliessung, Transaktionskosten)
+    verlustfrei in Python nachbauen - zwei parallele Implementierungen
+    derselben Mutationslogik, die bei jeder künftigen Änderung an einer
+    Stelle auseinanderlaufen können. Bei einer lokalen SQLite-DB mit
+    wenigen Positionen und typischerweise einstelliger Order-Anzahl pro
+    Lauf ist der tatsächliche Performance-Gewinn vernachlässigbar - das
+    Risiko einer Cash-/Positions-Divergenz überwiegt den Nutzen klar.
+    Bleibt wie dokumentiert bestehen statt einer unsicheren Änderung.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig
@@ -613,8 +681,15 @@ gesetzt).
 
 ## Dokumentationspflicht Short-Stop-Loss
 
-Jede automatische Zwangsschliessung einer Short-Position (Kurs ≥ 20% über
-Einstand) wird an zwei Stellen dokumentiert:
+Jede automatische Zwangsschliessung einer Short-Position (Kurs auf oder
+über der Stop-Loss-Schwelle) wird an zwei Stellen dokumentiert. Die
+Schwelle ist **kein fixer Wert**, sondern der konfigurierbare
+`short_stop_loss_pct` in `config/risk_config.yaml` (aktuell -0.20, siehe
+Kommentar dort) - änderbar ohne Code-Änderung. Seit `v13` (17-Punkte-Audit
+Fund #1) hat ausserdem ein individueller, pro Position gespeicherter
+`stop_loss_price` (z.B. von Claude bei der Short-Order genannt) Vorrang
+vor diesem globalen Prozentwert, falls einer gesetzt ist - siehe
+`risk_guardrails.evaluate_short_positions_for_stop_loss`.
 
 - `decisions`-Tabelle: eigener Eintrag mit `forced_action = 1` und
   Freitext-Begründung.
