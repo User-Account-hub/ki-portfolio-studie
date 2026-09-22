@@ -60,14 +60,6 @@ class PortfolioContext:
                 return p
         return None
 
-    def structured_products_notional(self, current_prices: dict[str, float]) -> float:
-        total = 0.0
-        for p in self.positions:
-            if p.instrument_type in STRUCTURED_INSTRUMENT_TYPES:
-                price = current_prices.get(p.symbol, p.avg_entry_price)
-                total += p.quantity * price
-        return total
-
     def leveraged_notional(self, current_prices: dict[str, float]) -> float:
         """Total notional of all leverage-controlled positions (structured
         products + watchlist-flagged leveraged instruments like NVDL/TSDD)."""
