@@ -13,24 +13,39 @@ API** ausgeführt werden. Es fliesst zu keinem Zeitpunkt echtes Geld.
 ## Architektur
 
 ```
-config/            Watchlist (Anlage-Universum) & Risk-Guardrail-Limiten
-db/                 SQLite-Schema + Init-Skript
+config/                    Watchlist (Anlage-Universum) & Risk-Guardrail-Limiten
+db/                        SQLite-Schema + Init-Skript
 src/
-  config.py         Lädt .env + YAML-Configs
-  data_fetch.py      Marktdaten via yfinance
-  prompt_builder.py  Baut System-/User-Prompt für Claude
-  claude_client.py   Ruft die Anthropic Messages API auf
-  order_schema.py    Pydantic-Modelle + JSON-Parsing der Claude-Antwort
-  position_sizing.py Volatilitätsadjustierte Positionsgrössen-Skalierung
-  risk_guardrails.py Pre-Trade-Risikoprüfung (reines, getestetes Modul)
-  broker_alpaca.py   Ausführung via Alpaca Paper Trading API
-  execution.py       Orchestriert Risk-Check -> Ausführung -> DB-Update
-  metrics.py         Rekonstruiert NAV-Verlauf & berechnet Kennzahlen
-  reporting.py       Erzeugt Markdown-Report pro Lauf
-  pipeline.py         Einstiegspunkt für einen kompletten Lauf
-tests/               Unit-Tests (Fokus: risk_guardrails)
-.github/workflows/   Wöchentlicher Cron-Lauf via GitHub Actions
-reports/             Generierte Markdown-Reports (werden versioniert)
+  config.py                 Lädt .env + YAML-Configs
+  data_fetch.py              Marktdaten via yfinance
+  fundamentals.py            Weicher Qualitäts-Score als zusätzlicher Prompt-Kontext
+  event_calendar.py          Event-Kalender-Hinweis (FOMC/CPI, Options-Verfall, Branchenevents)
+  news_feed.py                RSS-News-Aggregation (Kap. 12.2, fünf feste Feeds)
+  market_phase.py             Regelbasierter Bull/Bear/Seitwärts-Abgleich je Titel
+  momentum_baseline.py        Regelbasierte Momentum-Baseline (Kap. 6.9)
+  segment_basket.py           Thematischer Segment-ETF-Korb (Kap. 6.9)
+  prompt_builder.py           Baut System-/User-Prompt für Claude
+  claude_client.py            Ruft die Anthropic Messages API auf
+  order_schema.py             Pydantic-Modelle + JSON-Parsing der Claude-Antwort
+  boundary_conditions.py      Kap.-7-Randbedingungs-Tracking (Kursschwellen je Position)
+  position_sizing.py          Volatilitätsadjustierte Positionsgrössen-Skalierung
+  risk_guardrails.py          Pre-Trade-Risikoprüfung (reines, getestetes Modul)
+  correlation.py              Korrelations-Beobachtung neuer Käufe (rein dokumentarisch)
+  broker_alpaca.py            Ausführung via Alpaca Paper Trading API
+  execution.py                Orchestriert Risk-Check -> Ausführung -> DB-Update
+  db.py                       Dünne SQLite-Datenzugriffsschicht über db/schema.sql
+  data_quality.py             Datenqualitäts-Checks (u.a. fehlende Kurse bei offener Position)
+  deep_reflection_prompt.py   Monatlicher Tiefenreflexions-Prompt (Kap. 6.12.3)
+  deep_reflection_schema.py   Pydantic-Modell + Parser für die Tiefenreflexions-Antwort
+  stress_test.py              Historischer Stresstest (Kap. 11.2, manuell/on-demand)
+  stress_test_prompt.py       Prompt für Claudes Kommentar zum Stresstest
+  stress_test_schema.py       Pydantic-Modell + Parser für die Stresstest-Antwort
+  metrics.py                  Rekonstruiert NAV-Verlauf & berechnet Kennzahlen
+  reporting.py                 Erzeugt Markdown-Report pro Lauf
+  pipeline.py                  Einstiegspunkt für einen kompletten Lauf
+tests/                      Unit-Tests (deckt alle src/-Module ab, Kernfokus weiterhin risk_guardrails)
+.github/workflows/          Werktäglicher Cron-Lauf via GitHub Actions
+reports/                    Generierte Markdown-Reports (werden versioniert)
 ```
 
 **Ablauf eines Laufs** (`src/pipeline.py`):
