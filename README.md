@@ -399,6 +399,24 @@ reports/                    Generierte Markdown-Reports (werden versioniert)
   "Aufräum-Ausnahme"-Regel** für künftige Funde; jeder Fund mit
   Verhaltensänderung (wie v13/v14) bekommt weiterhin seine eigene,
   individuell begründete Versionsnummer.
+- **Hebel-Cap bewertet strukturierte Produkte jetzt mit Basiswert-Kurs-
+  Fallback (2026-09-22, `v16`, 17-Punkte-Audit Fund #6):**
+  `PortfolioContext.leveraged_notional` (genutzt von
+  `check_structured_products_cap` und `check_circuit_breaker`) nutzt bei
+  fehlendem aktuellem Kurs für ein strukturiertes Produkt jetzt denselben
+  Fallback wie `execution.resolve_price`: zuerst der Kurs des Symbols
+  selbst, sonst der seines Basiswerts (`OpenPosition.underlying_symbol`,
+  neu aus `positions.underlying_symbol` durchgereicht), erst danach der
+  Einstandskurs als letzter Fallback. Vorher fiel diese Bewertung bei
+  fehlendem eigenen Kurs SOFORT auf den permanent unveränderlichen
+  Einstandskurs zurück - der Hebel-Cap/Circuit-Breaker sah damit dauerhaft
+  denselben Wert, selbst wenn sich der (über den Basiswert-Proxy
+  eigentlich bekannte) tatsächliche Kurs des Produkts längst bewegt hatte.
+  Betrifft ausschliesslich die Hebel-spezifischen Checks - `compute_nav`
+  und die übrigen NAV-basierten Guardrails (Segmentgewicht, Top-3-
+  Konzentration etc.) nutzen weiterhin ihren bisherigen, unveränderten
+  Kurs-Fallback (derselbe grundsätzliche Gap besteht dort potenziell auch,
+  ist aber nicht Teil dieses Funds - bewusst minimal gehalten).
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig

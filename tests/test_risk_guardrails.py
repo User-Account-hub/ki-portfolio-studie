@@ -245,6 +245,54 @@ def test_structured_products_cap_not_applied_to_equity_orders():
     assert result.approved
 
 
+# --- HIGH? no, v16 (17-Punkte-Audit Fund #6): leveraged_notional Kurs-Fallback --
+
+
+def test_leveraged_notional_falls_back_to_underlying_symbol_price():
+    """Kein aktueller Kurs fuer das strukturierte Produkt selbst, aber einer
+    fuer seinen Basiswert - muss wie execution.resolve_price zuerst den
+    Basiswert-Kurs nutzen, NICHT sofort auf den Einstandskurs zurueckfallen."""
+    existing = OpenPosition(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", side="long",
+        quantity=1000, avg_entry_price=10.0, underlying_symbol="NVDA",
+    )
+    ctx = make_ctx(nav=100_000.0, positions=[existing])
+    # Kurs des Produkts selbst fehlt, aber NVDA (Basiswert) hat sich bewegt.
+    total = ctx.leveraged_notional(current_prices={"NVDA": 15.0})
+    assert total == pytest.approx(1000 * 15.0)
+
+
+def test_leveraged_notional_uses_own_price_over_underlying_when_both_available():
+    existing = OpenPosition(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", side="long",
+        quantity=1000, avg_entry_price=10.0, underlying_symbol="NVDA",
+    )
+    ctx = make_ctx(nav=100_000.0, positions=[existing])
+    total = ctx.leveraged_notional(current_prices={"MINI-NVDA-LONG-1": 12.0, "NVDA": 15.0})
+    assert total == pytest.approx(1000 * 12.0)
+
+
+def test_leveraged_notional_falls_back_to_entry_price_when_no_price_available_at_all():
+    """Weder eigener Kurs noch Basiswert-Kurs vorhanden -> wie bisher
+    Einstandskurs als letzter Fallback (kein Crash)."""
+    existing = OpenPosition(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", side="long",
+        quantity=1000, avg_entry_price=10.0, underlying_symbol="NVDA",
+    )
+    ctx = make_ctx(nav=100_000.0, positions=[existing])
+    total = ctx.leveraged_notional(current_prices={})
+    assert total == pytest.approx(1000 * 10.0)
+
+
+def test_leveraged_notional_ignores_underlying_symbol_for_non_leveraged_position():
+    existing = OpenPosition(
+        symbol="AAPL", instrument_type="equity", side="long",
+        quantity=10, avg_entry_price=150.0, underlying_symbol=None,
+    )
+    ctx = make_ctx(nav=100_000.0, positions=[existing])
+    assert ctx.leveraged_notional(current_prices={"AAPL": 200.0}) == 0.0
+
+
 # --- Kap. 6.8: Segmentgewicht --------------------------------------------------
 
 

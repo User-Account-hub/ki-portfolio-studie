@@ -36,6 +36,26 @@ def make_portfolio(conn: sqlite3.Connection, name: str = "test", initial_cash: f
     return cur.lastrowid
 
 
+# --- open_positions_as_risk_objects (v16, 17-Punkte-Audit Fund #6) -------------
+
+
+def test_open_positions_as_risk_objects_propagates_underlying_symbol():
+    """leveraged_notional's Basiswert-Kurs-Fallback (risk_guardrails.py) kann
+    OpenPosition.underlying_symbol nur nutzen, wenn diese Funktion es
+    tatsaechlich aus der positions-Tabelle durchreicht."""
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio_id, symbol="MINI-NVDA-LONG-1", instrument_type="mini_future",
+        underlying_symbol="NVDA", side="long", delta_quantity=1000, fill_price=10.0,
+    )
+    rows = db.get_open_positions(conn, portfolio_id)
+
+    positions = db.open_positions_as_risk_objects(rows)
+
+    assert positions[0].underlying_symbol == "NVDA"
+
+
 # --- ensure_nav_history_table (Migration) --------------------------------------
 
 

@@ -165,6 +165,9 @@ def open_positions_as_risk_objects(
                 # muss durchgereicht werden, sonst kann
                 # evaluate_short_positions_for_stop_loss ihn nie sehen.
                 stop_loss_price=r["stop_loss_price"],
+                # v16 (17-Punkte-Audit Fund #6): Basiswert-Kurs-Fallback fuer
+                # leveraged_notional muss durchgereicht werden.
+                underlying_symbol=r["underlying_symbol"],
             )
         )
     return positions

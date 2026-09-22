@@ -37,6 +37,11 @@ class OpenPosition:
     # einer gesetzt wurde - dann greift in
     # evaluate_short_positions_for_stop_loss der globale Fallback.
     stop_loss_price: float | None = None
+    # Nur fuer strukturierte Produkte gesetzt (positions.underlying_symbol,
+    # siehe db.open_positions_as_risk_objects) - Basiswert-Kurs-Fallback fuer
+    # leveraged_notional (v16, 17-Punkte-Audit Fund #6), analog zu
+    # execution.resolve_price.
+    underlying_symbol: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,11 +67,27 @@ class PortfolioContext:
 
     def leveraged_notional(self, current_prices: dict[str, float]) -> float:
         """Total notional of all leverage-controlled positions (structured
-        products + watchlist-flagged leveraged instruments like NVDL/TSDD)."""
+        products + watchlist-flagged leveraged instruments like NVDL/TSDD).
+
+        v16 (2026-09-22, 17-Punkte-Audit Fund #6): nutzt denselben Kurs-
+        Fallback wie execution.resolve_price - fehlt ein aktueller Kurs fuer
+        das Symbol selbst, wird der Kurs des Basiswerts verwendet (nur fuer
+        strukturierte Produkte relevant, siehe OpenPosition.
+        underlying_symbol). Vorher fiel diese Bewertung bei fehlendem
+        Symbol-Kurs SOFORT auf den permanent unveraenderlichen
+        Einstandskurs zurueck, obwohl fuer den Basiswert (der echte,
+        taeglich aktualisierte Kurse hat) meist ein aktueller Kurs vorlag -
+        der Einstandskurs bleibt nur noch der letzte Fallback, wenn auch der
+        Basiswert keinen Kurs liefert."""
         total = 0.0
         for p in self.positions:
             if _is_leverage_controlled(p.instrument_type, p.leveraged):
-                price = current_prices.get(p.symbol, p.avg_entry_price)
+                if p.symbol in current_prices:
+                    price = current_prices[p.symbol]
+                elif p.underlying_symbol and p.underlying_symbol in current_prices:
+                    price = current_prices[p.underlying_symbol]
+                else:
+                    price = p.avg_entry_price
                 total += p.quantity * price
         return total
 
