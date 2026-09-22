@@ -450,10 +450,33 @@ def execute_proposed_orders(
                         w.candidate_symbol, w.existing_symbol, w.correlation,
                     )
 
+            # v14 (2026-09-22, 17-Punkte-Audit Fund #2, HIGH - Kehrseite des
+            # 8.9.-Vorfalls, siehe INCIDENT_2026-09-08.md): fuer die
+            # Ausfuehrungsweg-Entscheidung (echt bei Alpaca vs. rein
+            # simuliert) ist das in der Watchlist hinterlegte instrument_type
+            # massgeblich, NICHT Claudes eigene Angabe im JSON - vorher
+            # entschied allein order.instrument_type.value darueber, ohne
+            # Abgleich gegen die Watchlist. Eine falsche/abweichende Angabe
+            # (versehentlich oder nicht) fuer ein real gelistetes Symbol
+            # haette DB-Zustand und echtes Alpaca-Konto dauerhaft und
+            # unbemerkt auseinanderlaufen lassen. Fehlt der Symbol-Eintrag in
+            # der Watchlist (sollte durch die LOW-3-Universums-Pruefung in
+            # evaluate_order oben ohnehin nie erreicht werden), bleibt
+            # Claudes Angabe der Fallback.
+            watchlist_instrument_type = order_meta.instrument_type if order_meta is not None else None
+            routing_instrument_type = watchlist_instrument_type or order.instrument_type.value
+            if watchlist_instrument_type is not None and watchlist_instrument_type != order.instrument_type.value:
+                log.warning(
+                    "instrument_type-Abweichung fuer %s: Claude gab '%s' an, Watchlist sagt '%s' - "
+                    "Watchlist-Wert entscheidet ueber den Ausfuehrungsweg (echt/simuliert), Abweichung "
+                    "dokumentiert statt stillschweigend uebernommen (v14).",
+                    order.symbol, order.instrument_type.value, watchlist_instrument_type,
+                )
+
             fill, source = _route_fill(
                 order_side,
                 order.symbol,
-                order.instrument_type.value,
+                routing_instrument_type,
                 order.quantity if order.quantity is not None else order.notional / price,
                 order.order_type,
                 order.limit_price,

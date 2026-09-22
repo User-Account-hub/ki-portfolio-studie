@@ -330,6 +330,29 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   Anlagekriterien - reine Reparatur eines bereits bestehenden, dokumentierten
   Pflicht-Guardrails. Siehe `evaluate_short_positions_for_stop_loss`-
   Docstring/Kommentar für die vollständige Begründung.
+- **Watchlist entscheidet über den Ausführungsweg (echt/simuliert), nicht
+  Claudes eigene Angabe (2026-09-22, `v14`, 17-Punkte-Audit Fund #2, HIGH):**
+  `execution.execute_proposed_orders` ermittelt vor dem `_route_fill`-Aufruf
+  jetzt das in der Watchlist (`config/watchlist.yaml`) hinterlegte
+  `instrument_type` für das Order-Symbol und nutzt DIESES für die
+  Real/Simuliert-Entscheidung - vorher entschied ausschliesslich Claudes
+  eigene `instrument_type`-Angabe im JSON, ungeprüft gegen die Watchlist.
+  Eine abweichende Angabe für ein real gelistetes Symbol (z.B. `NVDA` mit
+  `instrument_type: mini_future` statt `equity`) hätte die Order unbemerkt
+  rein simuliert gebucht, während DB-Zustand und echtes Alpaca-Konto
+  dauerhaft auseinanderdriften. Eine Abweichung wird jetzt als `log.warning`
+  dokumentiert statt still übernommen zu werden; fehlt der Symbol-Eintrag in
+  der Watchlist (sollte die LOW-3-Universumsprüfung in `evaluate_order`
+  ohnehin bereits verhindern), bleibt Claudes Angabe unverändert der
+  Fallback. **Bewusst vorgezogen aus der Oktober-Tiefenreflexions-Liste**
+  (zweiter offener HIGH-Punkt aus dem Audit) - inhaltlich die Kehrseite des
+  ungeklärten 8.9.-Vorfalls (`INCIDENT_2026-09-08.md`, `SECURITY-REVIEW.md`):
+  dort ging es um unautorisierte Trades OHNE Pipeline-Ursprung, hier um das
+  Risiko, dass die Pipeline selbst - bei einer falschen Selbstauskunft
+  Claudes - unbemerkt am echten Broker vorbei- oder gegen ihn ausführt.
+  Betrifft ausschliesslich die Real/Simuliert-Weiche selbst, keine Änderung
+  an Risikoprüfung, Anlagekriterien oder den in DB/Report gespeicherten
+  `instrument_type`-Werten.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig

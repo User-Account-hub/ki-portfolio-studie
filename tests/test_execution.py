@@ -15,8 +15,8 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src import db, execution
-from src.config import RiskConfig
+from src import broker_alpaca, db, execution
+from src.config import RiskConfig, WatchlistSymbol
 from src.market_phase import MarketPhase, MarketPhaseClassification
 from src.order_schema import ProposedOrder
 from src.position_sizing import VolatilityScaling
@@ -1012,6 +1012,144 @@ def test_execute_proposed_orders_continues_after_broker_error_mid_list():
     assert len(trades) == 2
     assert all(t["decision_id"] == decisions[0]["id"] for t in trades)
     assert {t["symbol"] for t in trades} == {"MINI-A-1", "MINI-C-1"}
+
+
+# --- HIGH-2 (17-Punkte-Audit Fund #2): Watchlist entscheidet ueber Ausfuehrungsweg ---
+
+
+def _fake_submit_equity_order(calls):
+    def _submit(client, symbol, quantity, side, order_type="market", limit_price=None):
+        calls.append(symbol)
+        return broker_alpaca.FillResult(
+            broker_order_id="fake-order-1", filled_price=100.0, filled_qty=quantity, status="filled",
+        )
+    return _submit
+
+
+def test_execute_proposed_orders_watchlist_instrument_type_forces_real_broker_route(monkeypatch):
+    """Claude behauptet instrument_type='mini_future' fuer NVDA, obwohl die
+    Watchlist NVDA als echte Aktie ('equity') fuehrt. Vor v14 haette allein
+    Claudes Angabe entschieden und die Order waere rein simuliert gebucht
+    worden, ohne echten Alpaca-Order und ohne dass das auffaellt - jetzt muss
+    die Watchlist-Wahrheit gewinnen: echter Broker-Aufruf, source='alpaca'."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+    calls: list[str] = []
+    monkeypatch.setattr(execution.broker_alpaca, "submit_equity_order", _fake_submit_equity_order(calls))
+
+    order = ProposedOrder(
+        symbol="NVDA", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=object(),  # wird dank Monkeypatch nie direkt benutzt
+        symbol_metadata={"NVDA": WatchlistSymbol(symbol="NVDA", instrument_type="equity")},
+    )
+
+    assert results[0].approved
+    assert calls == ["NVDA"]  # echter Broker-Pfad wurde tatsaechlich genommen
+
+    trade = conn.execute("SELECT * FROM trades WHERE portfolio_id = ?", (portfolio["id"],)).fetchone()
+    assert trade["source"] == "alpaca"
+
+
+def test_execute_proposed_orders_watchlist_instrument_type_forces_simulated_route(monkeypatch):
+    """Umgekehrter Fall: Claude behauptet instrument_type='equity', die
+    Watchlist fuehrt das Symbol aber als strukturiertes Produkt
+    ('mini_future') - der Ausfuehrungsweg muss simuliert bleiben, kein echter
+    Broker-Aufruf."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+    calls: list[str] = []
+    monkeypatch.setattr(execution.broker_alpaca, "submit_equity_order", _fake_submit_equity_order(calls))
+
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="equity", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+        symbol_metadata={
+            "MINI-NVDA-LONG-1": WatchlistSymbol(
+                symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+            )
+        },
+    )
+
+    assert results[0].approved
+    assert calls == []  # kein echter Broker-Aufruf
+
+    trade = conn.execute("SELECT * FROM trades WHERE portfolio_id = ?", (portfolio["id"],)).fetchone()
+    assert trade["source"] == "manual_simulation"
+
+
+def test_execute_proposed_orders_logs_instrument_type_mismatch(monkeypatch, caplog):
+    """Eine Abweichung zwischen Claudes Angabe und der Watchlist-Wahrheit muss
+    dokumentiert (geloggt) werden, kein stiller Fehler."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+    monkeypatch.setattr(execution.broker_alpaca, "submit_equity_order", _fake_submit_equity_order([]))
+
+    order = ProposedOrder(
+        symbol="NVDA", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",
+    )
+
+    with caplog.at_level("WARNING"):
+        execution.execute_proposed_orders(
+            conn, portfolio, [order],
+            model="test", prompt="p", raw_response="r",
+            risk_config=risk_config,
+            current_prices={"NVDA": 100.0},
+            start_of_run_nav=100_000.0,
+            broker_client=object(),
+            symbol_metadata={"NVDA": WatchlistSymbol(symbol="NVDA", instrument_type="equity")},
+        )
+
+    assert any("instrument_type-Abweichung" in r.message for r in caplog.records)
+
+
+def test_execute_proposed_orders_falls_back_to_claude_instrument_type_without_watchlist_entry():
+    """Ohne symbol_metadata (kein Watchlist-Abgleich moeglich) bleibt Claudes
+    eigene Angabe der Fallback - unveraendertes Verhalten fuer strukturierte
+    Produkte, die (noch) nicht in der Watchlist gefuehrt werden (siehe
+    README, 'aktuell ungenutzt')."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=100_000.0)
+    risk_config = make_risk_config()
+
+    order = ProposedOrder(
+        symbol="MINI-NVDA-LONG-1", instrument_type="mini_future", underlying_symbol="NVDA",
+        side="buy", notional=4_000.0, rationale="test",
+    )
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order],
+        model="test", prompt="p", raw_response="r",
+        risk_config=risk_config,
+        current_prices={"NVDA": 100.0},
+        start_of_run_nav=100_000.0,
+        broker_client=None,
+    )
+
+    assert results[0].approved
+    trade = conn.execute("SELECT * FROM trades WHERE portfolio_id = ?", (portfolio["id"],)).fetchone()
+    assert trade["source"] == "manual_simulation"
 
 
 def test_execute_proposed_orders_broker_error_does_not_lose_previously_fetched_reasons_data():
