@@ -332,6 +332,42 @@ def _is_micro_cap(cap_tier: str | None) -> bool:
     return bool(cap_tier) and "micro" in cap_tier.lower()
 
 
+# v17 (2026-09-22, 17-Punkte-Audit Fund #7): die vier Segment-/Konzentrations-
+# Checks unten summierten Long- und Short-Positionen bisher UNGERICHTET
+# (jede Position mit +quantity*price, unabhaengig von p.side) - inkonsistent
+# zu compute_nav oben, das eine Short-Position korrekt GEGENRECHNET
+# (-quantity*price). Real ueber jede Short-Order in einem getaggten Segment
+# auslösbar (Anhang-A-Aktien), am direktesten aber ueber Top-3-Konzentration,
+# die KEIN Segment/CapTier voraussetzt - z.B. eine SHORT-Position in TSDD
+# (2x-Short-TSLA-ETF, `leveraged: true`, kein Segment/CapTier in der
+# Watchlist, siehe config/watchlist.yaml) wurde bisher genauso addiert wie
+# eine gleich grosse LONG-Position, obwohl sie compute_nav zufolge das NAV
+# in die ENTGEGENGESETZTE Richtung bewegt. _signed_position_value/
+# _signed_order_notional unten stellen dieselbe Vorzeichen-Logik wie
+# compute_nav her; der Limit-Vergleich nutzt danach bewusst abs() des
+# Netto-Werts statt des rohen Netto-Werts selbst - ein reiner Netto-
+# Vergleich (ohne abs()) wuerde die Leitplanke fuer eine grosse NETTO-SHORT-
+# Position stillschweigend wirkungslos machen (eine negative Zahl ist nie
+# > limit), was die Inkonsistenz zwar beheben, den Check aber gleichzeitig
+# entschaerfen wuerde. Bewusst NICHT Teil dieses Funds: PortfolioContext.
+# leveraged_notional (Hebel-Cap/Circuit-Breaker) hat denselben ungerichteten
+# Summierungs-Fehler, ist aber nicht Teil von Fund #7 (siehe v16/Fund #6,
+# der denselben Denominator nur beim Kurs-Fallback angefasst hat).
+def _signed_position_value(p: OpenPosition, current_prices: dict[str, float]) -> float:
+    """Marktwert einer Position mit demselben Vorzeichen wie in compute_nav
+    (long positiv, short negativ)."""
+    market_value = p.quantity * current_prices.get(p.symbol, p.avg_entry_price)
+    return market_value if p.side == "long" else -market_value
+
+
+def _signed_order_notional(order: ProposedOrder, price: float) -> float:
+    """order_notional mit demselben Vorzeichen wie _signed_position_value -
+    nur fuer BUY/SHORT relevant (die einzigen Seiten, unter denen die
+    Segment-/Konzentrations-Checks unten ueberhaupt aufgerufen werden)."""
+    notional = order_notional(order, price)
+    return notional if order.side == OrderSide.BUY else -notional
+
+
 def check_segment_weight(
     order: ProposedOrder,
     ctx: PortfolioContext,
@@ -341,20 +377,22 @@ def check_segment_weight(
     max_pct_of_nav: float,
 ) -> RiskCheckResult:
     """Kap. 6.8: ein einzelnes Anhang-A-Segment darf nach Ausführung des
-    Trades nicht mehr als `max_pct_of_nav` des NAV ausmachen. Orders ohne
-    bekanntes Segment (z.B. strukturierte Produkte) werden nicht geprüft."""
+    Trades nicht mehr als `max_pct_of_nav` des NAV ausmachen (betragsmässig,
+    siehe v17-Kommentar oben - long und short zaehlen ihrer tatsächlichen
+    NAV-Wirkung entsprechend, nicht brutto addiert). Orders ohne bekanntes
+    Segment (z.B. strukturierte Produkte) werden nicht geprüft."""
     if order_segment is None or order.side not in (OrderSide.BUY, OrderSide.SHORT):
         return RiskCheckResult.ok()
     existing = sum(
-        p.quantity * current_prices.get(p.symbol, p.avg_entry_price)
+        _signed_position_value(p, current_prices)
         for p in ctx.positions
         if p.segment == order_segment
     )
-    added = order_notional(order, price)
+    net_exposure = existing + _signed_order_notional(order, price)
     limit = ctx.nav * max_pct_of_nav
-    if existing + added > limit:
+    if abs(net_exposure) > limit:
         return RiskCheckResult.reject(
-            f"Segment '{order_segment}' läge nach dieser Order ({existing + added:.2f}) "
+            f"Segment '{order_segment}' läge nach dieser Order ({abs(net_exposure):.2f}) "
             f"über dem Limit von {max_pct_of_nav:.0%} des NAV ({limit:.2f})."
         )
     return RiskCheckResult.ok()
@@ -371,22 +409,23 @@ def check_correlated_segment_exposure(
 ) -> RiskCheckResult:
     """Kap. 6.8: kombinierte Exposure der korrelierten Segmente (Default:
     Krypto-Mining + Digital Assets & Krypto-Oekosystem, siehe risk_config.yaml)
-    darf `max_pct_of_nav` des NAV nicht überschreiten."""
+    darf `max_pct_of_nav` des NAV nicht überschreiten (betragsmässig, siehe
+    v17-Kommentar oben)."""
     if not correlated_segments or order_segment not in correlated_segments:
         return RiskCheckResult.ok()
     if order.side not in (OrderSide.BUY, OrderSide.SHORT):
         return RiskCheckResult.ok()
     existing = sum(
-        p.quantity * current_prices.get(p.symbol, p.avg_entry_price)
+        _signed_position_value(p, current_prices)
         for p in ctx.positions
         if p.segment in correlated_segments
     )
-    added = order_notional(order, price)
+    net_exposure = existing + _signed_order_notional(order, price)
     limit = ctx.nav * max_pct_of_nav
-    if existing + added > limit:
+    if abs(net_exposure) > limit:
         return RiskCheckResult.reject(
             f"Korrelierte Segmente {sorted(correlated_segments)} lägen nach dieser Order "
-            f"({existing + added:.2f}) über dem Limit von {max_pct_of_nav:.0%} des NAV ({limit:.2f})."
+            f"({abs(net_exposure):.2f}) über dem Limit von {max_pct_of_nav:.0%} des NAV ({limit:.2f})."
         )
     return RiskCheckResult.ok()
 
@@ -400,19 +439,20 @@ def check_micro_cap_exposure(
     max_pct_of_nav: float,
 ) -> RiskCheckResult:
     """Kap. 6.8: Micro-Cap-Sublimit über alle Micro-Cap-Titel (CapTier laut
-    Anhang A) hinweg, unabhängig vom Segment."""
+    Anhang A) hinweg, unabhängig vom Segment (betragsmässig, siehe
+    v17-Kommentar oben)."""
     if order.side not in (OrderSide.BUY, OrderSide.SHORT) or not _is_micro_cap(order_cap_tier):
         return RiskCheckResult.ok()
     existing = sum(
-        p.quantity * current_prices.get(p.symbol, p.avg_entry_price)
+        _signed_position_value(p, current_prices)
         for p in ctx.positions
         if _is_micro_cap(p.cap_tier)
     )
-    added = order_notional(order, price)
+    net_exposure = existing + _signed_order_notional(order, price)
     limit = ctx.nav * max_pct_of_nav
-    if existing + added > limit:
+    if abs(net_exposure) > limit:
         return RiskCheckResult.reject(
-            f"Micro-Cap-Exposure läge nach dieser Order ({existing + added:.2f}) über dem "
+            f"Micro-Cap-Exposure läge nach dieser Order ({abs(net_exposure):.2f}) über dem "
             f"Sublimit von {max_pct_of_nav:.0%} des NAV ({limit:.2f})."
         )
     return RiskCheckResult.ok()
@@ -425,17 +465,17 @@ def check_top3_concentration(
     current_prices: dict[str, float],
     max_pct_of_nav: float,
 ) -> RiskCheckResult:
-    """Kap. 6.8: die drei grössten Einzelpositionen (nach Marktwert, je
-    Symbol über Long/Short summiert) dürfen zusammen `max_pct_of_nav` des
-    NAV nicht überschreiten."""
+    """Kap. 6.8: die drei grössten Einzelpositionen (nach Marktwert-Betrag,
+    je Symbol über Long/Short NETTO summiert wie in compute_nav, siehe
+    v17-Kommentar oben) dürfen zusammen `max_pct_of_nav` des NAV nicht
+    überschreiten."""
     if order.side not in (OrderSide.BUY, OrderSide.SHORT):
         return RiskCheckResult.ok()
     values: dict[str, float] = {}
     for p in ctx.positions:
-        values[p.symbol] = values.get(p.symbol, 0.0) + p.quantity * current_prices.get(p.symbol, p.avg_entry_price)
-    delta_qty = order.quantity if order.quantity is not None else order_notional(order, price) / price
-    values[order.symbol] = values.get(order.symbol, 0.0) + delta_qty * price
-    top3_total = sum(sorted(values.values(), reverse=True)[:3])
+        values[p.symbol] = values.get(p.symbol, 0.0) + _signed_position_value(p, current_prices)
+    values[order.symbol] = values.get(order.symbol, 0.0) + _signed_order_notional(order, price)
+    top3_total = sum(sorted((abs(v) for v in values.values()), reverse=True)[:3])
     limit = ctx.nav * max_pct_of_nav
     if top3_total > limit:
         return RiskCheckResult.reject(

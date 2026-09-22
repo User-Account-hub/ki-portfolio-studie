@@ -417,6 +417,29 @@ reports/                    Generierte Markdown-Reports (werden versioniert)
   Konzentration etc.) nutzen weiterhin ihren bisherigen, unveränderten
   Kurs-Fallback (derselbe grundsätzliche Gap besteht dort potenziell auch,
   ist aber nicht Teil dieses Funds - bewusst minimal gehalten).
+- **Segment-/Konzentrations-Checks rechnen Short-Exposure jetzt gegen statt
+  brutto zu addieren (2026-09-22, `v17`, 17-Punkte-Audit Fund #7):**
+  `check_segment_weight`, `check_correlated_segment_exposure`,
+  `check_micro_cap_exposure` und `check_top3_concentration` summierten
+  Long- und Short-Positionen bisher UNGERICHTET (`+quantity*price`
+  unabhängig von der Positionsseite) - inkonsistent zu `compute_nav`, das
+  eine Short-Position korrekt gegenrechnet (`-quantity*price`). Neue
+  Helfer `_signed_position_value`/`_signed_order_notional` stellen
+  dieselbe Vorzeichen-Logik wie `compute_nav` her; der Limit-Vergleich
+  nutzt danach bewusst `abs()` des resultierenden Netto-Werts statt des
+  rohen Netto-Werts - ein reiner Netto-Vergleich würde die Leitplanke für
+  eine grosse NETTO-SHORT-Position stillschweigend wirkungslos machen
+  (eine negative Zahl ist nie `> limit`). Am direktesten real auslösbar
+  über `check_top3_concentration` mit einer SHORT-Position in einem
+  Titel wie TSDD (2x-Short-TSLA-ETF, `leveraged: true`, kein
+  Segment/CapTier in der Watchlist) - die anderen drei Checks greifen für
+  ein solches Symbol gar nicht erst, da sie ein bekanntes Segment/CapTier
+  voraussetzen. **Bewusst NICHT Teil dieses Funds:**
+  `PortfolioContext.leveraged_notional` (Hebel-Cap/Circuit-Breaker) hat
+  denselben ungerichteten Summierungs-Fehler, ist aber nicht in Fund #7
+  benannt (siehe v16/Fund #6, der denselben Denominator nur beim
+  Kurs-Fallback angefasst hat) - bleibt als mögliches künftiges
+  Audit-Thema offen.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig

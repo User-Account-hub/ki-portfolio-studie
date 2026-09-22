@@ -342,6 +342,47 @@ def test_segment_weight_noop_without_segment():
     assert result.approved
 
 
+# --- v17 (17-Punkte-Audit Fund #7): Short-Exposure wird jetzt gegengerechnet ----
+
+
+def test_segment_weight_short_offsets_existing_long_within_limit():
+    """Long 20_000 + Short 20_000 im selben Segment netten sich zu 0 (wie
+    compute_nav es fuer NAV bereits tut) - eine neue 29_000-Order bleibt
+    dadurch innerhalb des 30_000-Limits. Vor v17 haette der Bug beide
+    Positionen brutto addiert (40_000) und die Order faelschlich abgelehnt."""
+    existing_long = OpenPosition(
+        symbol="NVDA", instrument_type="equity", side="long", quantity=100, avg_entry_price=200.0,
+        segment="KI-Halbleiter & Compute",
+    )
+    existing_short = OpenPosition(
+        symbol="AMD", instrument_type="equity", side="short", quantity=100, avg_entry_price=200.0,
+        segment="KI-Halbleiter & Compute",
+    )
+    order = make_order(symbol="MSFT", quantity=290)  # 29_000
+    ctx = make_ctx(nav=100_000.0, positions=[existing_long, existing_short])
+    result = check_segment_weight(
+        order, ctx, price=100.0, current_prices={}, order_segment="KI-Halbleiter & Compute", max_pct_of_nav=0.30
+    )
+    assert result.approved
+
+
+def test_segment_weight_large_net_short_still_exceeds_limit_via_abs():
+    """Eine grosse NETTO-SHORT-Position im Segment darf das Limit nicht
+    stillschweigend wirkungslos machen - abs() des Netto-Werts faengt das
+    weiterhin ab, ein reiner Netto-Vergleich (-37_000 > 30_000) wuerde nie
+    ausloesen."""
+    existing_short = OpenPosition(
+        symbol="NVDA", instrument_type="equity", side="short", quantity=175, avg_entry_price=200.0,
+        segment="KI-Halbleiter & Compute",
+    )
+    order = make_order(symbol="AMD", side="short", quantity=20)  # -2_000
+    ctx = make_ctx(nav=100_000.0, positions=[existing_short])
+    result = check_segment_weight(
+        order, ctx, price=100.0, current_prices={}, order_segment="KI-Halbleiter & Compute", max_pct_of_nav=0.30
+    )
+    assert not result.approved
+
+
 # --- Kap. 6.8: korrelierte Krypto-Mining-/Digital-Assets-Exposure --------------
 
 CORRELATED_SEGMENTS = {"Krypto-Mining", "Digital Assets & Krypto-Oekosystem"}
@@ -387,6 +428,42 @@ def test_correlated_exposure_ignores_unrelated_segment():
     assert result.approved
 
 
+# --- v17 (17-Punkte-Audit Fund #7): Short-Exposure wird jetzt gegengerechnet ----
+
+
+def test_correlated_exposure_short_offsets_existing_long_within_limit():
+    existing_long = OpenPosition(
+        symbol="MARA", instrument_type="equity", side="long", quantity=100, avg_entry_price=200.0,
+        segment="Krypto-Mining",
+    )
+    existing_short = OpenPosition(
+        symbol="RIOT", instrument_type="equity", side="short", quantity=100, avg_entry_price=200.0,
+        segment="Krypto-Mining",
+    )
+    order = make_order(symbol="COIN", quantity=290)  # 29_000
+    ctx = make_ctx(nav=100_000.0, positions=[existing_long, existing_short])
+    result = check_correlated_segment_exposure(
+        order, ctx, price=100.0, current_prices={},
+        order_segment="Digital Assets & Krypto-Oekosystem", correlated_segments=CORRELATED_SEGMENTS,
+        max_pct_of_nav=0.30,
+    )
+    assert result.approved
+
+
+def test_correlated_exposure_large_net_short_still_exceeds_limit_via_abs():
+    existing_short = OpenPosition(
+        symbol="MARA", instrument_type="equity", side="short", quantity=175, avg_entry_price=200.0,
+        segment="Krypto-Mining",
+    )
+    order = make_order(symbol="RIOT", side="short", quantity=20)  # -2_000
+    ctx = make_ctx(nav=100_000.0, positions=[existing_short])
+    result = check_correlated_segment_exposure(
+        order, ctx, price=100.0, current_prices={},
+        order_segment="Krypto-Mining", correlated_segments=CORRELATED_SEGMENTS, max_pct_of_nav=0.30,
+    )
+    assert not result.approved
+
+
 # --- Kap. 6.8: Micro-Cap-Sublimit -----------------------------------------------
 
 
@@ -426,6 +503,39 @@ def test_micro_cap_ignores_non_micro_order():
     assert result.approved
 
 
+# --- v17 (17-Punkte-Audit Fund #7): Short-Exposure wird jetzt gegengerechnet ----
+
+
+def test_micro_cap_short_offsets_existing_long_within_limit():
+    existing_long = OpenPosition(
+        symbol="QBTS", instrument_type="equity", side="long", quantity=1000, avg_entry_price=10.0,
+        cap_tier="Micro-Cap",
+    )
+    existing_short = OpenPosition(
+        symbol="RGTI", instrument_type="equity", side="short", quantity=1000, avg_entry_price=10.0,
+        cap_tier="Micro/Small-Cap",
+    )
+    order = make_order(symbol="IONQ", quantity=1450)  # 14_500
+    ctx = make_ctx(nav=100_000.0, positions=[existing_long, existing_short])
+    result = check_micro_cap_exposure(
+        order, ctx, price=10.0, current_prices={}, order_cap_tier="Micro-Cap", max_pct_of_nav=0.15
+    )
+    assert result.approved
+
+
+def test_micro_cap_large_net_short_still_exceeds_limit_via_abs():
+    existing_short = OpenPosition(
+        symbol="QBTS", instrument_type="equity", side="short", quantity=1550, avg_entry_price=10.0,
+        cap_tier="Micro-Cap",
+    )
+    order = make_order(symbol="RGTI", side="short", quantity=100)  # -1_000
+    ctx = make_ctx(nav=100_000.0, positions=[existing_short])
+    result = check_micro_cap_exposure(
+        order, ctx, price=10.0, current_prices={}, order_cap_tier="Micro/Small-Cap", max_pct_of_nav=0.15
+    )
+    assert not result.approved
+
+
 # --- Kap. 6.8: Top-3-Konzentration ----------------------------------------------
 
 
@@ -457,6 +567,49 @@ def test_top3_concentration_ignored_for_sell():
     ctx = make_ctx(nav=100_000.0, positions=existing)
     result = check_top3_concentration(order, ctx, price=100.0, current_prices={}, max_pct_of_nav=0.35)
     assert result.approved
+
+
+# --- v17 (17-Punkte-Audit Fund #7): Short-Exposure wird jetzt gegengerechnet ----
+# TSDD (config/watchlist.yaml): instrument_type="etf", leveraged=True, kein
+# Segment/CapTier - genau das Profil, ueber das dieser Fund real auslösbar
+# ist (die Segment-/Micro-Cap-Checks oben greifen fuer TSDD gar nicht erst).
+
+
+def test_top3_concentration_nets_long_and_short_on_the_same_symbol():
+    """Kernfall des Funds: 200 Stueck LONG TSDD (10_000) UND 150 Stueck SHORT
+    TSDD (7_500) gleichzeitig offen - laut Docstring ('je Symbol über
+    Long/Short summiert') haette das schon immer NETTO 2_500 sein sollen,
+    wurde aber brutto zu 17_500 addiert. Nur nach dem Fix bleibt eine
+    zusaetzliche 20_000-Order innerhalb des 35_000-Limits (2_500+20_000=
+    22_500); vor v17 waere sie bei 17_500+20_000=37_500 abgelehnt worden."""
+    existing = [
+        OpenPosition(
+            symbol="TSDD", instrument_type="etf", side="long", quantity=200, avg_entry_price=50.0, leveraged=True,
+        ),
+        OpenPosition(
+            symbol="TSDD", instrument_type="etf", side="short", quantity=150, avg_entry_price=50.0, leveraged=True,
+        ),
+    ]
+    order = make_order(symbol="MSFT", quantity=200)  # 20_000
+    ctx = make_ctx(nav=100_000.0, positions=existing)
+    result = check_top3_concentration(order, ctx, price=100.0, current_prices={}, max_pct_of_nav=0.35)
+    assert result.approved
+
+
+def test_top3_concentration_short_only_position_still_counts_via_abs():
+    """Eine reine SHORT-Position (kein Gegen-Long) darf nicht stillschweigend
+    aus der Konzentrationsrechnung verschwinden, nur weil sie jetzt negativ
+    gezaehlt wird - abs() haelt sie weiterhin im Limit-Vergleich."""
+    existing = [
+        OpenPosition(
+            symbol="TSDD", instrument_type="etf", side="short", quantity=300, avg_entry_price=50.0, leveraged=True,
+        ),
+    ]
+    order = make_order(symbol="MSFT", quantity=250)  # 25_000
+    ctx = make_ctx(nav=100_000.0, positions=existing)
+    # TSDD 15_000 (abs) + MSFT 25_000 = 40_000 > 35_000
+    result = check_top3_concentration(order, ctx, price=100.0, current_prices={}, max_pct_of_nav=0.35)
+    assert not result.approved
 
 
 # --- Kap. 6.8: Mindest-Cash-Quote ------------------------------------------------
