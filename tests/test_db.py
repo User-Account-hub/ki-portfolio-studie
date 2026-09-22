@@ -518,6 +518,40 @@ def test_get_open_boundary_conditions_excludes_triggered_and_closed():
     assert [r["id"] for r in rows] == [open_id]
 
 
+def test_get_open_boundary_conditions_includes_underlying_symbol_for_structured_products():
+    """v18 (17-Punkte-Audit Fund #12): evaluate_boundary_conditions kann den
+    Basiswert-Kurs-Fallback nur nutzen, wenn diese Funktion ihn ueberhaupt
+    aus der positions-Tabelle mitliefert."""
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    position_id = db.upsert_open_position(
+        conn, portfolio_id=portfolio_id, symbol="MINI-NVDA-LONG-1", instrument_type="mini_future",
+        underlying_symbol="NVDA", side="long", delta_quantity=1000, fill_price=10.0,
+    )
+    db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="MINI-NVDA-LONG-1",
+        description="test", check_type="price_above", threshold_price=12.0,
+    )
+
+    rows = db.get_open_boundary_conditions(conn, portfolio_id)
+
+    assert rows[0]["underlying_symbol"] == "NVDA"
+
+
+def test_get_open_boundary_conditions_underlying_symbol_none_for_regular_equity():
+    conn = make_conn()
+    portfolio_id = make_portfolio(conn)
+    position_id = make_open_position(conn, portfolio_id)
+    db.insert_boundary_condition(
+        conn, portfolio_id=portfolio_id, position_id=position_id, symbol="NVDA",
+        description="test", check_type="price_above", threshold_price=200.0,
+    )
+
+    rows = db.get_open_boundary_conditions(conn, portfolio_id)
+
+    assert rows[0]["underlying_symbol"] is None
+
+
 def test_mark_boundary_conditions_triggered_sets_status_and_timestamp():
     conn = make_conn()
     portfolio_id = make_portfolio(conn)

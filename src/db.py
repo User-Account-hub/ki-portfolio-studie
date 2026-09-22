@@ -509,8 +509,18 @@ def insert_boundary_condition(
 
 
 def get_open_boundary_conditions(conn: sqlite3.Connection, portfolio_id: int) -> list[sqlite3.Row]:
+    """Joins `positions` für `underlying_symbol` (v18, 17-Punkte-Audit
+    Fund #12) - boundary_conditions selbst speichert ihn nicht, aber
+    evaluate_boundary_conditions braucht ihn für den Basiswert-Kurs-Fallback
+    bei strukturierten Produkten. Nur bei einem strukturierten Produkt
+    gesetzt, sonst NULL (wie in positions.underlying_symbol)."""
     return conn.execute(
-        "SELECT * FROM boundary_conditions WHERE portfolio_id = ? AND status = 'open'",
+        """
+        SELECT bc.*, p.underlying_symbol AS underlying_symbol
+        FROM boundary_conditions bc
+        JOIN positions p ON p.id = bc.position_id
+        WHERE bc.portfolio_id = ? AND bc.status = 'open'
+        """,
         (portfolio_id,),
     ).fetchall()
 

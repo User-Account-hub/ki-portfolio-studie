@@ -230,6 +230,48 @@ def test_second_call_failure_persists_nothing(monkeypatch):
     assert rows == []
 
 
+# --- Fund #4 (17-Punkte-Audit): _run_short_stop_loss_sweep_safely -----------
+
+
+def make_risk_config_for_sweep() -> SimpleNamespace:
+    return SimpleNamespace(short_stop_loss_pct=-0.20, transaction_cost_pct_of_notional=0.001)
+
+
+def test_run_short_stop_loss_sweep_safely_normal_case():
+    conn = make_conn()
+    portfolio = make_portfolio(conn)
+
+    forced_actions, sweep_error = pipeline._run_short_stop_loss_sweep_safely(
+        conn, portfolio, {}, make_risk_config_for_sweep(), broker_client=None,
+    )
+
+    assert forced_actions == []
+    assert sweep_error is None
+
+
+def test_run_short_stop_loss_sweep_safely_survives_sweep_failure(monkeypatch, caplog):
+    """Regressionsschutz (v18, Fund #4): ein Fehler IM SWEEP SELBST (nicht
+    nur bei einem einzelnen Pflicht-Cover) darf den Lauf nicht abstuerzen
+    lassen - vorher lief die Exception ungefangen durch und verhinderte
+    jeden Report fuer diesen Lauf."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn)
+
+    def _raise(*a, **k):
+        raise RuntimeError("Broker down")
+
+    monkeypatch.setattr(pipeline.execution, "run_short_stop_loss_sweep", _raise)
+
+    with caplog.at_level("ERROR"):
+        forced_actions, sweep_error = pipeline._run_short_stop_loss_sweep_safely(
+            conn, portfolio, {}, make_risk_config_for_sweep(), broker_client=None,
+        )
+
+    assert forced_actions == []
+    assert sweep_error == "Broker down"
+    assert any("Short-Stop-Loss-Sweep fehlgeschlagen" in r.message for r in caplog.records)
+
+
 # --- Fund #9 (17-Punkte-Audit): _run_data_quality_checks --------------------
 
 

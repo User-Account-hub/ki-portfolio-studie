@@ -20,6 +20,7 @@ from src.market_phase import MarketPhase, MarketPhaseContradiction
 from src.metrics import MetricsResult
 from src.order_schema import CyclePosition, ProposedOrder
 from src.reporting import generate_report, generate_stress_test_report
+from src.risk_guardrails import ForcedStopLossAction
 from src.stress_test import PositionWeight, StressPeriodResult
 from src.stress_test_schema import StressTestCommentary
 
@@ -59,17 +60,21 @@ def _generate(
     metrics=None,
     open_positions=None,
     data_quality_report=None,
+    forced_actions=None,
+    stop_loss_sweep_error=None,
 ) -> str:
     portfolio_row = {"name": "test", "currency": "USD", "benchmark_symbol": "SPY"}
     metrics = metrics if metrics is not None else make_metrics()
     data_quality_report = data_quality_report if data_quality_report is not None else EMPTY_DQ_REPORT
     with tempfile.TemporaryDirectory() as tmp_dir:
         report_path = generate_report(
-            portfolio_row, open_positions or [], executed_results or [], [], "", metrics, data_quality_report,
+            portfolio_row, open_positions or [], executed_results or [], forced_actions or [], "", metrics,
+            data_quality_report,
             deep_reflection,
             triggered_boundary_conditions or [], still_open_boundary_conditions or [], correlation_cluster_count,
             earnings_warnings or [], macro_events or [],
             tmp_dir,
+            stop_loss_sweep_error=stop_loss_sweep_error,
         )
         return Path(report_path).read_text(encoding="utf-8")
 
@@ -95,6 +100,63 @@ def test_report_includes_reflection_section_when_present():
     assert "NVDA-These bestätigt" in content
     assert "CCJ-These überfällig" in content
     assert "Alles im Rahmen der Methodik." in content
+
+
+# --- Fund #4 (17-Punkte-Audit): Short-Stop-Loss-Sweep im Report -------------
+
+
+def test_report_shows_forced_stop_loss_closures():
+    action = ForcedStopLossAction(
+        symbol="TSLA", instrument_type="equity", quantity=5, entry_price=200.0,
+        current_price=245.0, loss_pct=0.225, documentation="Automatischer Short-Stop-Loss ausgelöst für TSLA.",
+    )
+    content = _generate(deep_reflection=None, forced_actions=[action])
+    assert "## ⚠️ Automatische Stop-Loss-Schliessungen" in content
+    assert "TSLA" in content
+    assert "Short-Stop-Loss-Sweep fehlgeschlagen" not in content
+
+
+def test_report_shows_sweep_error_instead_of_silently_omitting_section():
+    """v18/Fund #4: ein fehlgeschlagener Sweep muss sichtbar dokumentiert
+    werden, statt dass der Report einfach ohne jeden Hinweis darauf
+    erscheint."""
+    content = _generate(deep_reflection=None, stop_loss_sweep_error="Broker down")
+    assert "## ⚠️ Short-Stop-Loss-Sweep fehlgeschlagen" in content
+    assert "Broker down" in content
+    assert "## ⚠️ Automatische Stop-Loss-Schliessungen" not in content
+
+
+def test_report_omits_both_sweep_sections_in_normal_case():
+    content = _generate(deep_reflection=None)
+    assert "Short-Stop-Loss-Sweep fehlgeschlagen" not in content
+    assert "Automatische Stop-Loss-Schliessungen" not in content
+
+
+# --- Fund #12 (17-Punkte-Audit): Basiswert-Proxy-Hinweis bei Randbedingungen --
+
+
+def test_report_flags_underlying_price_proxy_for_structured_product_boundary_condition():
+    triggered = BoundaryConditionCheck(
+        id=1, position_id=1, symbol="MINI-NVDA-LONG-1", description="Ausbruch",
+        check_type="price_above", threshold_price=12.0, underlying_symbol="NVDA",
+    )
+    still_open = BoundaryConditionCheck(
+        id=2, position_id=1, symbol="MINI-NVDA-LONG-1", description="Bruch",
+        check_type="price_below", threshold_price=8.0, underlying_symbol="NVDA",
+    )
+    content = _generate(
+        deep_reflection=None, triggered_boundary_conditions=[triggered], still_open_boundary_conditions=[still_open],
+    )
+    assert "Kurs via Basiswert NVDA approximiert" in content
+
+
+def test_report_omits_proxy_hint_for_regular_equity_boundary_condition():
+    still_open = BoundaryConditionCheck(
+        id=1, position_id=1, symbol="NVDA", description="Bruch",
+        check_type="price_below", threshold_price=150.0, underlying_symbol=None,
+    )
+    content = _generate(deep_reflection=None, still_open_boundary_conditions=[still_open])
+    assert "approximiert" not in content
 
 
 # --- Selbstkonsistenz-Prüfung (2026-09-19) -----------------------------------

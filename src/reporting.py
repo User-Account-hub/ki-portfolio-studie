@@ -37,6 +37,7 @@ def generate_report(
     earnings_warnings: list[EarningsWarning],
     macro_events: list[MacroEvent],
     reports_dir: str,
+    stop_loss_sweep_error: str | None = None,
 ) -> Path:
     lines = []
     now = datetime.now()
@@ -104,11 +105,23 @@ def generate_report(
     if triggered_boundary_conditions:
         lines.append("**Ausgelöst in diesem Lauf:**")
         for c in triggered_boundary_conditions:
-            lines.append(f"- **{c.symbol}**: {c.description}")
+            # v18 (17-Punkte-Audit Fund #12): bei strukturierten Produkten
+            # (c.underlying_symbol gesetzt) wurde die Schwelle gegen den
+            # Kurs des BASISWERTS geprüft, nicht gegen einen eigenen Kurs
+            # des Produkts (den es nicht gibt, siehe boundary_conditions.py)
+            # - dieselbe dokumentierte Approximation wie beim übrigen
+            # Kurs-Proxy-Mechanismus, hier explizit sichtbar gemacht.
+            proxy_note = f" (Kurs via Basiswert {c.underlying_symbol} approximiert)" if c.underlying_symbol else ""
+            lines.append(f"- **{c.symbol}**{proxy_note}: {c.description}")
     if still_open_boundary_conditions:
         lines.append("**Weiterhin offen:**")
         for c in still_open_boundary_conditions:
-            note = "nicht automatisch prüfbar" if c.check_type == "qualitative" else f"Schwelle {c.threshold_price:.2f}"
+            if c.check_type == "qualitative":
+                note = "nicht automatisch prüfbar"
+            else:
+                note = f"Schwelle {c.threshold_price:.2f}"
+                if c.underlying_symbol:
+                    note += f", Kurs via Basiswert {c.underlying_symbol} approximiert"
             lines.append(f"- **{c.symbol}** ({note}): {c.description}")
     if not triggered_boundary_conditions and not still_open_boundary_conditions:
         lines.append("_Keine offenen Randbedingungen._")
@@ -214,7 +227,22 @@ def generate_report(
             lines.append(f"- Zusammenfassung (2. Aufruf): {secondary.reflection_commentary}")
         lines.append("")
 
-    if forced_actions:
+    # v18 (17-Punkte-Audit Fund #4): ein fehlgeschlagener Sweep SELBST (nicht
+    # nur ein einzeln fehlgeschlagener Pflicht-Cover, der bereits als
+    # forced_action dokumentiert wird) muss sichtbar bleiben, statt beim
+    # naechsten Report einfach zu fehlen - siehe pipeline.py's try/except um
+    # execution.run_short_stop_loss_sweep.
+    if stop_loss_sweep_error:
+        lines.append("## ⚠️ Short-Stop-Loss-Sweep fehlgeschlagen (Pflicht-Guardrail nicht geprüft)")
+        lines.append(
+            "Der Pflicht-Sweep für offene Short-Positionen (siehe README, \"Dokumentationspflicht "
+            "Short-Stop-Loss\") konnte in diesem Lauf wegen eines unerwarteten Fehlers NICHT "
+            "durchgeführt werden - offene Short-Positionen wurden in diesem Lauf NICHT auf ihren "
+            "Stop-Loss geprüft. Die Prüfung erfolgt regulär beim nächsten Lauf erneut."
+        )
+        lines.append(f"**Fehler:** {stop_loss_sweep_error}")
+        lines.append("")
+    elif forced_actions:
         lines.append("## ⚠️ Automatische Stop-Loss-Schliessungen (dokumentationspflichtig)")
         for action in forced_actions:
             lines.append(f"- **{action.symbol}**: {action.documentation}")

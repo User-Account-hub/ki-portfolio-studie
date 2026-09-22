@@ -53,7 +53,7 @@ from src.claude_client import get_trading_decision
 from src.config import AppConfig, RiskConfig, Watchlist
 from src.order_schema import STRUCTURED_INSTRUMENT_TYPES, OrderParsingError, parse_orders_from_json
 from src.prompt_builder import SYSTEM_PROMPT, build_user_prompt
-from src.risk_guardrails import compute_nav
+from src.risk_guardrails import ForcedStopLossAction, compute_nav
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("pipeline")
@@ -294,6 +294,38 @@ def _fetch_universe_fundamentals(universe_symbols: list[str]) -> dict[str, funda
         return {}
 
 
+def _run_short_stop_loss_sweep_safely(
+    conn,
+    portfolio_row,
+    current_prices: dict[str, float],
+    risk_config: RiskConfig,
+    broker_client,
+) -> tuple[list[ForcedStopLossAction], str | None]:
+    """v18 (2026-09-22, 17-Punkte-Audit Fund #4): ein unerwarteter Fehler im
+    Sweep SELBST (z.B. ein Broker-Fehler beim Pflicht-Cover, siehe
+    execution.execute_forced_stop_loss_actions - anders als ein einzeln
+    fehlgeschlagener Cover dort, der bereits abgefangen wird) lief vorher
+    ungefangen durch und liess den GESAMTEN Lauf abstuerzen, bevor überhaupt
+    ein Report geschrieben wurde - der dokumentationspflichtige Pflicht-
+    Sweep fehlte dann komplett, statt sichtbar als Fehler dokumentiert zu
+    sein. Analog zu _run_data_quality_checks/_check_boundary_conditions
+    oben: der Lauf darf an diesem Check selbst nicht scheitern.
+
+    Returns (forced_actions, sweep_error) - sweep_error ist None im
+    Normalfall, sonst die Fehlermeldung für Log UND Report (siehe
+    reporting.generate_report's stop_loss_sweep_error)."""
+    try:
+        return execution.run_short_stop_loss_sweep(
+            conn, portfolio_row, current_prices, risk_config, broker_client
+        ), None
+    except Exception as exc:
+        log.exception(
+            "Short-Stop-Loss-Sweep fehlgeschlagen - Pflicht-Guardrail konnte in diesem Lauf NICHT "
+            "geprüft werden. Offene Short-Positionen werden beim nächsten Lauf erneut geprüft."
+        )
+        return [], str(exc)
+
+
 def _check_boundary_conditions(
     conn,
     portfolio_id: int,
@@ -313,6 +345,7 @@ def _check_boundary_conditions(
                 description=r["description"],
                 check_type=r["check_type"],
                 threshold_price=r["threshold_price"],
+                underlying_symbol=r["underlying_symbol"],
             )
             for r in open_rows
         ]
@@ -641,7 +674,7 @@ def run(force: bool | None = None) -> None:
         log.info("NAV-Höchststand (historisch): %.2f", peak_nav)
 
         log.info("Prüfe offene Short-Positionen auf Stop-Loss-Trigger...")
-        forced_actions = execution.run_short_stop_loss_sweep(
+        forced_actions, stop_loss_sweep_error = _run_short_stop_loss_sweep_safely(
             conn, portfolio_row, current_prices, risk_config, broker_client
         )
         if forced_actions:
@@ -783,6 +816,7 @@ def run(force: bool | None = None) -> None:
             earnings_warnings,
             macro_events,
             app_config.reports_dir,
+            stop_loss_sweep_error=stop_loss_sweep_error,
         )
         log.info("Report geschrieben: %s", report_path)
 

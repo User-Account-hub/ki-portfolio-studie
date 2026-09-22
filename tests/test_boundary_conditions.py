@@ -76,3 +76,41 @@ def test_evaluates_multiple_conditions_independently():
 
 def test_empty_input_returns_empty_lists():
     assert evaluate_boundary_conditions([], {"NVDA": 100.0}) == ([], [])
+
+
+# --- v18 (17-Punkte-Audit Fund #12): Basiswert-Kurs-Fallback -------------------
+
+
+def test_falls_back_to_underlying_symbol_price():
+    """Strukturiertes Produkt ohne eigenen Kurs, aber mit Kurs fuer seinen
+    Basiswert - muss trotzdem geprueft werden, nicht permanent offen
+    bleiben."""
+    cond = make_check(
+        symbol="MINI-NVDA-LONG-1", check_type="price_above", threshold_price=12.0,
+        underlying_symbol="NVDA",
+    )
+    triggered, still_open = evaluate_boundary_conditions([cond], {"NVDA": 15.0})
+    assert triggered == [cond]
+    assert still_open == []
+
+
+def test_uses_own_price_over_underlying_when_both_available():
+    cond = make_check(
+        symbol="MINI-NVDA-LONG-1", check_type="price_above", threshold_price=12.0,
+        underlying_symbol="NVDA",
+    )
+    triggered, still_open = evaluate_boundary_conditions(
+        [cond], {"MINI-NVDA-LONG-1": 10.0, "NVDA": 15.0}
+    )
+    assert triggered == []
+    assert still_open == [cond]
+
+
+def test_stays_open_when_neither_own_nor_underlying_price_available():
+    cond = make_check(
+        symbol="MINI-NVDA-LONG-1", check_type="price_above", threshold_price=12.0,
+        underlying_symbol="NVDA",
+    )
+    triggered, still_open = evaluate_boundary_conditions([cond], {})
+    assert triggered == []
+    assert still_open == [cond]
