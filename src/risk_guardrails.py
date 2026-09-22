@@ -30,6 +30,13 @@ class OpenPosition:
     # (siehe db.open_positions_as_risk_objects). Bringt diese Positionen in den
     # Geltungsbereich der Hebel-spezifischen Guardrails.
     leveraged: bool = False
+    # Individueller, bei Order-Aufgabe von Claude genannter (oder von
+    # risk_guardrails/execution auf Basis von short_stop_loss_pct gesetzter)
+    # Stop-Loss-Kurs, aus positions.stop_loss_price (siehe
+    # db.open_positions_as_risk_objects). None, wenn fuer diese Position nie
+    # einer gesetzt wurde - dann greift in
+    # evaluate_short_positions_for_stop_loss der globale Fallback.
+    stop_loss_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -631,6 +638,28 @@ def evaluate_order(
     return result
 
 
+# v13 (2026-09-22, 17-Punkte-Audit Fund #1, HIGH): BEWUSSTE AUSNAHME von der
+# Grundregel, Audit-Funde ohne akute Dringlichkeit gesammelt erst zur
+# naechsten monatlichen Tiefenreflexion (Kap. 6.12.3, naechster Termin
+# Oktober 2026) zu adressieren, statt einzeln vorzuziehen. Begruendung fuer
+# das Vorziehen: Fund #1 betrifft den bestehenden Short-Stop-Loss-Mechanismus
+# SELBST (nicht die Anlagelogik) - Claude wird im Prompt aufgefordert, pro
+# Short-Order einen eigenen stop_loss_price zu nennen; dieser wurde zwar in
+# der DB gespeichert und im Report angezeigt, aber
+# evaluate_short_positions_for_stop_loss hatte ihn nie gelesen und wendete
+# stattdessen ausnahmslos den globalen risk_config.short_stop_loss_pct an -
+# ein Pflicht-Sicherheitsmechanismus verhielt sich damit nachweislich anders,
+# als das System (Prompt + Report) es Claude UND dem menschlichen Leser
+# suggerierte. Das ist keine methodische Aenderung an sich (die Guardrail
+# existierte bereits, dieselbe Sweep-Logik, derselbe Aufrufzeitpunkt) und
+# kein Eingriff in die Anlagelogik, sondern das Schliessen einer Luecke
+# zwischen dokumentiertem und tatsaechlichem Verhalten einer bereits
+# bestehenden Leitplanke - genau die Kategorie, bei der ein Zuwarten bis
+# Oktober das Risiko selbst (nicht nur seine Dokumentation) einen Monat lang
+# unadressiert liesse. Fix: individueller stop_loss_price hat Vorrang, falls
+# fuer die Position gesetzt; fehlt er, bleibt der bisherige globale
+# Prozent-Fallback unveraendert (Rueckwaertskompatibel, siehe
+# test_short_stop_loss_not_triggered_below_threshold).
 def evaluate_short_positions_for_stop_loss(
     positions: list[OpenPosition],
     current_prices: dict[str, float],
@@ -639,9 +668,13 @@ def evaluate_short_positions_for_stop_loss(
     """Mandatory sweep run before every pipeline decision cycle.
 
     For every open short position, force a close if the price has moved
-    against the position by more than abs(short_stop_loss_pct). This is
-    independent of the daily-loss-stop gate and independent of what Claude
-    proposes - it is a hard, documentation-required safety mechanism.
+    against the position by more than abs(short_stop_loss_pct) - UNLESS an
+    individual stop_loss_price is stored for that position (typically the
+    value Claude named when opening the short, see order_schema.ProposedOrder
+    .stop_loss_price), in which case that price takes precedence over the
+    global percentage (v13, 17-Punkte-Audit Fund #1). This is independent of
+    the daily-loss-stop gate and independent of what Claude proposes - it is
+    a hard, documentation-required safety mechanism.
     """
     threshold = abs(short_stop_loss_pct)
     forced: list[ForcedStopLossAction] = []
@@ -652,7 +685,13 @@ def evaluate_short_positions_for_stop_loss(
         if price is None:
             continue
         loss_pct = (price - p.avg_entry_price) / p.avg_entry_price  # positive = loss on a short
-        if loss_pct >= threshold:
+        if p.stop_loss_price is not None:
+            triggered = price >= p.stop_loss_price
+            threshold_desc = f"individueller Stop-Loss {p.stop_loss_price:.2f}"
+        else:
+            triggered = loss_pct >= threshold
+            threshold_desc = f"globale Schwelle {threshold:.2%}"
+        if triggered:
             forced.append(
                 ForcedStopLossAction(
                     symbol=p.symbol,
@@ -664,7 +703,7 @@ def evaluate_short_positions_for_stop_loss(
                     documentation=(
                         f"Automatischer Short-Stop-Loss ausgelöst für {p.symbol}: "
                         f"Kurs {price:.2f} liegt {loss_pct:.2%} über Einstandskurs "
-                        f"{p.avg_entry_price:.2f} (Schwelle {threshold:.2%})."
+                        f"{p.avg_entry_price:.2f} ({threshold_desc})."
                     ),
                 )
             )

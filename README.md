@@ -313,6 +313,23 @@ reports/             Generierte Markdown-Reports (werden versioniert)
   `CPI_RELEASE_DATES` jährlich von Hand nachgepflegt werden. Rein
   informativ wie der übrige Event-Kalender: kein Guardrail, keine
   automatische Reaktion.
+- **Individueller Short-Stop-Loss hat Vorrang vor der globalen Schwelle
+  (2026-09-22, `v13`, 17-Punkte-Audit Fund #1, HIGH):**
+  `risk_guardrails.evaluate_short_positions_for_stop_loss` liest jetzt den
+  individuellen `stop_loss_price` einer Position (von Claude pro Short-Order
+  genannt, in `positions.stop_loss_price` gespeichert, im Report angezeigt),
+  falls vorhanden - vorher wurde er zwar gespeichert und angezeigt, aber vom
+  Pflicht-Sweep selbst nie gelesen; es zählte ausnahmslos der globale
+  `risk_config.short_stop_loss_pct`. Fehlt der individuelle Wert für eine
+  Position weiterhin, bleibt der bisherige globale Prozent-Fallback
+  unverändert. **Bewusst vorgezogen aus der Oktober-Tiefenreflexions-Liste
+  (Kap. 6.12.3)** statt bis dahin gesammelt zu warten: die Lücke betraf den
+  Stop-Loss-Mechanismus selbst (nicht die Anlagelogik) - Prompt und Report
+  suggerierten Claude/dem Leser ein individuelles Sicherheitsnetz, das
+  faktisch nie griff. Kein neuer Mechanismus, keine Änderung an
+  Anlagekriterien - reine Reparatur eines bereits bestehenden, dokumentierten
+  Pflicht-Guardrails. Siehe `evaluate_short_positions_for_stop_loss`-
+  Docstring/Kommentar für die vollständige Begründung.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig

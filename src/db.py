@@ -161,6 +161,10 @@ def open_positions_as_risk_objects(
                 segment=meta.segment if meta is not None else None,
                 cap_tier=meta.cap_tier if meta is not None else None,
                 leveraged=getattr(meta, "leveraged", False) if meta is not None else False,
+                # v13 (17-Punkte-Audit Fund #1): individueller Stop-Loss-Kurs
+                # muss durchgereicht werden, sonst kann
+                # evaluate_short_positions_for_stop_loss ihn nie sehen.
+                stop_loss_price=r["stop_loss_price"],
             )
         )
     return positions

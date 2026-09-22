@@ -727,6 +727,50 @@ def test_short_stop_loss_ignores_long_positions():
     assert forced == []
 
 
+# --- HIGH-1 (17-Punkte-Audit Fund #1): individueller stop_loss_price hat Vorrang ---
+
+
+def test_short_stop_loss_uses_individual_price_when_set():
+    """Individueller stop_loss_price (215) wird bereits VOR der globalen -20%-
+    Schwelle (Einstand 200 -> 240) erreicht - muss trotzdem ausloesen."""
+    positions = [
+        OpenPosition(
+            symbol="TSLA", instrument_type="equity", side="short", quantity=5,
+            avg_entry_price=200.0, stop_loss_price=215.0,
+        )
+    ]
+    current_prices = {"TSLA": 220.0}  # +10%, unter der globalen 20%-Schwelle
+    forced = evaluate_short_positions_for_stop_loss(positions, current_prices, short_stop_loss_pct=-0.20)
+    assert len(forced) == 1
+    assert forced[0].symbol == "TSLA"
+    assert "individueller Stop-Loss" in forced[0].documentation
+
+
+def test_short_stop_loss_individual_price_not_yet_reached():
+    """Globale -20%-Schwelle waere hier laengst ueberschritten (+22.5%), aber
+    der individuelle, hoehere stop_loss_price (250) hat Vorrang und wurde noch
+    nicht erreicht -> keine Zwangsschliessung."""
+    positions = [
+        OpenPosition(
+            symbol="TSLA", instrument_type="equity", side="short", quantity=5,
+            avg_entry_price=200.0, stop_loss_price=250.0,
+        )
+    ]
+    current_prices = {"TSLA": 245.0}
+    forced = evaluate_short_positions_for_stop_loss(positions, current_prices, short_stop_loss_pct=-0.20)
+    assert forced == []
+
+
+def test_short_stop_loss_falls_back_to_global_pct_when_no_individual_price():
+    """Kein stop_loss_price fuer diese Position gespeichert -> bisheriges
+    Verhalten (globaler Prozent-Fallback) bleibt unveraendert."""
+    positions = [OpenPosition(symbol="TSLA", instrument_type="equity", side="short", quantity=5, avg_entry_price=200.0)]
+    current_prices = {"TSLA": 245.0}
+    forced = evaluate_short_positions_for_stop_loss(positions, current_prices, short_stop_loss_pct=-0.20)
+    assert len(forced) == 1
+    assert "globale Schwelle" in forced[0].documentation
+
+
 # --- LOW-3: investment-universe allowlist (defense in depth) --------------------
 
 
