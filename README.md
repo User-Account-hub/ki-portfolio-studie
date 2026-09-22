@@ -368,6 +368,37 @@ reports/                    Generierte Markdown-Reports (werden versioniert)
   Betrifft ausschliesslich die Real/Simuliert-Weiche selbst, keine Änderung
   an Risikoprüfung, Anlagekriterien oder den in DB/Report gespeicherten
   `instrument_type`-Werten.
+- **Aufräumarbeiten ohne Verhaltensänderung aus dem 17-Punkte-Audit (2026-09-22,
+  `v15`, Sammel-Ausnahme):** fünf Audit-Funde ohne akute Dringlichkeit wurden
+  in EINEM Durchgang statt einzeln vorgezogen, weil sie alle derselben
+  Kategorie angehören - reine Test-/Dokumentations-/Tote-Code-Aufräumarbeit,
+  ohne jede Änderung an Anlagelogik, Guardrails oder Ausführungsverhalten
+  (im Unterschied zu v13/v14 oben, die beide echtes Verhalten korrigiert
+  haben). Jeder Punkt ist trotzdem ein eigener, für sich lauffähiger Commit:
+  - **Fund #5:** toten Code entfernt (`PortfolioContext.
+    structured_products_notional`, Vorgänger-Logik von `leveraged_notional`,
+    ohne verbleibende Aufrufer).
+  - **Fund #8:** README-Architekturabschnitt um bis dahin fehlende Module
+    ergänzt (`boundary_conditions`, `correlation`, `data_quality`, `db`,
+    `deep_reflection_prompt`/`_schema`, `event_calendar`, `fundamentals`,
+    `market_phase`, `momentum_baseline`, `news_feed`, `segment_basket`,
+    `stress_test`-Trio) sowie den veralteten "wöchentlich"-Cron-Hinweis
+    korrigiert.
+  - **Fund #9:** Regressionstests für `pipeline._run_data_quality_checks`
+    und `pipeline._check_boundary_conditions` ergänzt (`_maybe_run_deep_
+    reflection` hatte bereits Abdeckung).
+  - **Fund #10:** Tests für `config.RiskConfig.from_yaml`/`config.AppConfig.
+    load` über den echten Datei-/Env-Ladepfad ergänzt (vorher nur indirekt
+    über ein lokal vorhandenes `.env`/`risk_config.yaml` getestet).
+  - **Fund #14:** Tests für `data_fetch.py`s Rechenhelfer (`_pct_change`,
+    `_sma`, `_annualized_volatility`) ergänzt, inkl. Grenzfällen (exakte
+    Mindestlänge, konstante Rendite -> Volatilität 0).
+
+  Diese Sammel-Ausnahme gilt AUSSCHLIESSLICH für diese fünf, explizit
+  genannten, verhaltensneutralen Punkte - **keine allgemeine
+  "Aufräum-Ausnahme"-Regel** für künftige Funde; jeder Fund mit
+  Verhaltensänderung (wie v13/v14) bekommt weiterhin seine eigene,
+  individuell begründete Versionsnummer.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig
