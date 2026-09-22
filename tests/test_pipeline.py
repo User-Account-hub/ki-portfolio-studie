@@ -230,6 +230,155 @@ def test_second_call_failure_persists_nothing(monkeypatch):
     assert rows == []
 
 
+# --- Fund #9 (17-Punkte-Audit): _run_data_quality_checks --------------------
+
+
+def make_app_config_with_alpaca() -> SimpleNamespace:
+    return SimpleNamespace(alpaca_api_key="x", alpaca_secret_key="x")
+
+
+def test_run_data_quality_checks_builds_report_from_fetched_sources(monkeypatch):
+    """Normalfall: Alpaca-Stichprobenkurs weicht > 1% vom yfinance-Kurs ab -
+    muss als price_deviation im zurueckgegebenen Report landen."""
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_market_data_client", lambda *a, **k: object())
+    monkeypatch.setattr(
+        pipeline.broker_alpaca, "get_latest_trade_prices", lambda client, symbols: {"AAPL": 101.5}
+    )
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_price_histories", lambda *a, **k: {})
+
+    report = pipeline._run_data_quality_checks(
+        make_app_config_with_alpaca(),
+        tradable_symbols=["AAPL"],
+        structured_product_symbols=set(),
+        yfinance_prices={"AAPL": 100.0},
+        open_position_rows=[],
+    )
+
+    assert len(report.price_deviations) == 1
+    assert report.price_deviations[0].symbol == "AAPL"
+
+
+def test_run_data_quality_checks_survives_alpaca_fetch_failure(monkeypatch):
+    """Ein fehlschlagender Alpaca-Kursvergleich darf den Check nicht crashen -
+    nur der Preisvergleich-Teil des Reports bleibt leer."""
+    def _raise(*a, **k):
+        raise RuntimeError("Alpaca down")
+
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_market_data_client", _raise)
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_price_histories", lambda *a, **k: {})
+
+    report = pipeline._run_data_quality_checks(
+        make_app_config_with_alpaca(),
+        tradable_symbols=["AAPL"],
+        structured_product_symbols=set(),
+        yfinance_prices={"AAPL": 100.0},
+        open_position_rows=[],
+    )
+
+    assert report.price_deviations == []
+
+
+def test_run_data_quality_checks_survives_price_history_fetch_failure(monkeypatch):
+    """Ein fehlschlagender Kurshistorien-Abruf darf den Check ebenfalls nicht
+    crashen - nur der Luecken-/Ausreisser-Teil des Reports bleibt leer."""
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_market_data_client", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_latest_trade_prices", lambda client, symbols: {})
+
+    def _raise(*a, **k):
+        raise RuntimeError("yfinance down")
+
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_price_histories", _raise)
+
+    report = pipeline._run_data_quality_checks(
+        make_app_config_with_alpaca(),
+        tradable_symbols=["AAPL"],
+        structured_product_symbols=set(),
+        yfinance_prices={"AAPL": 100.0},
+        open_position_rows=[],
+    )
+
+    assert report.missing_trading_days == []
+    assert report.outlier_moves == []
+
+
+def test_run_data_quality_checks_flags_stale_open_position(monkeypatch):
+    """open_position_rows wird unveraendert an data_quality.build_report
+    durchgereicht - eine offene Position ohne Kurs weder fuer ihr eigenes
+    Symbol noch (hier: keinen) Basiswert muss als stale_position auftauchen,
+    unabhaengig vom Alpaca-/Historien-Abruf."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn)
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol="DELISTED", instrument_type="equity",
+        underlying_symbol=None, side="long", delta_quantity=10, fill_price=50.0,
+    )
+    open_rows = db.get_open_positions(conn, portfolio["id"])
+
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_market_data_client", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline.broker_alpaca, "get_latest_trade_prices", lambda client, symbols: {})
+    monkeypatch.setattr(pipeline.data_fetch, "fetch_price_histories", lambda *a, **k: {})
+
+    report = pipeline._run_data_quality_checks(
+        make_app_config_with_alpaca(),
+        tradable_symbols=["AAPL"],
+        structured_product_symbols=set(),
+        yfinance_prices={"AAPL": 100.0},  # kein Kurs fuer DELISTED
+        open_position_rows=open_rows,
+    )
+
+    assert len(report.stale_positions) == 1
+    assert report.stale_positions[0].symbol == "DELISTED"
+
+
+# --- Fund #9 (17-Punkte-Audit): _check_boundary_conditions ------------------
+
+
+def test_check_boundary_conditions_marks_triggered_in_db_and_returns_both_lists():
+    conn = make_conn()
+    portfolio = make_portfolio(conn)
+    position_id = db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol="NVDA", instrument_type="equity",
+        underlying_symbol=None, side="long", delta_quantity=10, fill_price=100.0,
+    )
+    triggered_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio["id"], position_id=position_id, symbol="NVDA",
+        description="Ausbruch ueber SMA50", check_type="price_above", threshold_price=120.0,
+    )
+    open_id = db.insert_boundary_condition(
+        conn, portfolio_id=portfolio["id"], position_id=position_id, symbol="NVDA",
+        description="Bruch unter Einstand", check_type="price_below", threshold_price=80.0,
+    )
+
+    triggered, still_open = pipeline._check_boundary_conditions(conn, portfolio["id"], {"NVDA": 125.0})
+
+    assert [c.id for c in triggered] == [triggered_id]
+    assert [c.id for c in still_open] == [open_id]
+
+    # In der DB muss NUR die ausgeloeste Randbedingung als 'triggered' markiert
+    # sein - die offene bleibt fuer den naechsten Lauf bestehen.
+    remaining_open = db.get_open_boundary_conditions(conn, portfolio["id"])
+    assert [r["id"] for r in remaining_open] == [open_id]
+
+
+def test_check_boundary_conditions_returns_empty_lists_without_crashing_on_db_error(monkeypatch, caplog):
+    """Analog zu _run_data_quality_checks: ein Fehler in der Pruefung selbst
+    (z.B. DB-Problem) darf den Pipeline-Lauf nicht abbrechen."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn)
+
+    def _raise(*a, **k):
+        raise RuntimeError("DB kaputt")
+
+    monkeypatch.setattr(pipeline.db, "get_open_boundary_conditions", _raise)
+
+    with caplog.at_level("ERROR"):
+        triggered, still_open = pipeline._check_boundary_conditions(conn, portfolio["id"], {"NVDA": 100.0})
+
+    assert triggered == []
+    assert still_open == []
+    assert any("Randbedingungs" in r.message for r in caplog.records)
+
+
 # --- _pilot_phase_positions_still_open (2026-09-21, EINMALIGE Uebergangs- ---
 # --- Sicherheitspruefung Pilotphase -> offizielle Studie, siehe pipeline.py --
 # --- Block-Kommentar und RESET_2026-09-21.md) --------------------------------
