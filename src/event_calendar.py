@@ -33,10 +33,12 @@ log = logging.getLogger("pipeline")
 DEFAULT_EVENT_WINDOW_TRADING_DAYS = 3
 DEFAULT_EARNINGS_FETCH_MAX_WORKERS = 10
 
-# Hardcodierte FOMC-Zinsentscheid-Termine 2026 (jeweils der zweite Tag der
-# zweitägigen Sitzung - dort liegt die eigentliche Marktbewegung). Quelle:
-# federalreserve.gov / fedratecalc.com, recherchiert 2026-09-18. Kein
-# Live-Feed - muss für ein weiteres Jahr manuell ergänzt werden (analog zu
+# Hardcodierte FOMC-Zinsentscheid-Termine 2026/2027 (jeweils der zweite Tag
+# der zweitägigen Sitzung - dort liegt die eigentliche Marktbewegung).
+# Quelle 2026: federalreserve.gov / fedratecalc.com, recherchiert 2026-09-18.
+# Quelle 2027: Fed-Pressemitteilung vom 2025-09-05 (vorläufiger Sitzungsplan
+# 2027), ergänzt 2026-09-24 (Datenpflege Kap. 6.14/15). Kein Live-Feed - muss
+# für ein weiteres Jahr manuell ergänzt werden (analog zu
 # metrics.DEFAULT_RISK_FREE_RATE_ANNUAL).
 FOMC_DECISION_DATES: list[datetime.date] = [
     datetime.date(2026, 1, 28),
@@ -47,10 +49,21 @@ FOMC_DECISION_DATES: list[datetime.date] = [
     datetime.date(2026, 9, 16),
     datetime.date(2026, 10, 28),
     datetime.date(2026, 12, 9),
+    datetime.date(2027, 1, 27),
+    datetime.date(2027, 3, 17),
+    datetime.date(2027, 4, 28),
+    datetime.date(2027, 6, 9),
+    datetime.date(2027, 7, 28),
+    datetime.date(2027, 9, 15),
+    datetime.date(2027, 10, 27),
+    datetime.date(2027, 12, 8),
 ]
 
 # Hardcodierte CPI-Veröffentlichungstermine 2026. Quelle: bls.gov/schedule/
-# news_release/cpi.htm, recherchiert 2026-09-18.
+# news_release/cpi.htm, recherchiert 2026-09-18. Stand 2026-09-24: der
+# BLS-Plan 2027 ist dort noch nicht veröffentlicht (Liste endet mit dem
+# Release vom 2026-12-10) - 2027-Termine nachtragen, sobald bls.gov sie
+# publiziert (Datenpflege Kap. 6.14/15).
 CPI_RELEASE_DATES: list[datetime.date] = [
     datetime.date(2026, 1, 13),
     datetime.date(2026, 2, 13),
@@ -77,12 +90,18 @@ CPI_RELEASE_DATES: list[datetime.date] = [
 # DATES/CPI_RELEASE_DATES oben jaehrlich von Hand nachgepflegt werden.
 # Je Veranstaltung EIN Datum (analog zu FOMC: der markt-/ankuendigungs-
 # relevanteste einzelne Tag - i.d.R. Eroeffnung/Keynote), nicht der volle
-# mehrtaegige Veranstaltungszeitraum. Quellen (recherchiert 2026-09-21):
+# mehrtaegige Veranstaltungszeitraum. Quellen 2026 (recherchiert 2026-09-21):
 # ces.tech (CES), nvidia.com/gtc (GTC), miningdisrupt.com (Mining Disrupt).
+# 2027-Termine ergaenzt 2026-09-24 (Datenpflege Kap. 6.14/15), Quellen:
+# ces.tech (CES 2027, 6.-9.1.2027), nvidia.com/gtc (GTC 2027, 15.-18.3.2027).
+# Mining Disrupt 2027 bewusst weggelassen: noch nicht angekuendigt und nach
+# Studienende.
 SECTOR_EVENT_DATES: list[tuple[str, datetime.date]] = [
     ("CES 2026", datetime.date(2026, 1, 6)),
     ("NVIDIA GTC 2026", datetime.date(2026, 3, 16)),
     ("Mining Disrupt 2026", datetime.date(2026, 7, 21)),
+    ("CES 2027", datetime.date(2027, 1, 6)),        # ces.tech, 6.-9.1.2027
+    ("NVIDIA GTC 2027", datetime.date(2027, 3, 15)), # nvidia.com/gtc, 15.-18.3.2027
 ]
 
 # Monate mit gleichzeitigem Verfall von Aktienindex-Futures, Index-Optionen
