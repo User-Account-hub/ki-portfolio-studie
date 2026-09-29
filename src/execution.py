@@ -20,6 +20,7 @@ live cash_balance instead of silently drifting from it.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 from dataclasses import dataclass, field
 
@@ -473,11 +474,51 @@ def execute_proposed_orders(
                     order.symbol, order.instrument_type.value, watchlist_instrument_type,
                 )
 
+            quantity_to_route = order.quantity if order.quantity is not None else order.notional / price
+
+            # v19 (2026-09-29, siehe README-Governance-Log): Alpaca lehnt
+            # fraktionierte SHORT-Orders grundsaetzlich ab ("fractional
+            # orders cannot be sold short") - kein bewusstes Guardrail-Veto,
+            # sondern ein rein technisches Ausfuehrungs-Scheitern, das
+            # SHORT-Positionen strukturell benachteiligt (real zweimal
+            # aufgetreten: 21.09. in einer Multi-Order-Liste, 29.09. bei
+            # MSTR). Betrifft nur real bei Alpaca geroutete SHORT-Orders
+            # (routing_instrument_type in TRADABLE_INSTRUMENT_TYPES) - eine
+            # simulierte Order fuer ein strukturiertes Produkt unterliegt
+            # dieser Broker-Restriktion nicht und bleibt unveraendert
+            # fraktioniert. Es wird IMMER abgerundet, nie aufgerundet, damit
+            # die Order nie ueber die bereits Guardrail-geprüfte Groesse
+            # hinausgeht. Rundet das Ergebnis auf 0, ist selbst 1 ganze
+            # Aktie zu gross fuer die vorgesehene (Vol-/Konviktions-
+            # skalierte) Positionsgroesse - die Order wird dann abgelehnt,
+            # OHNE ueberhaupt beim Broker eingereicht zu werden, und im
+            # Report klar als solche gekennzeichnet statt einen API-Fehler
+            # zu erzeugen (siehe execution_error-Feld/Kommentar unten fuer
+            # den Unterschied zu einem ECHTEN unerwarteten Fehler).
+            if order_side == OrderSide.SHORT and routing_instrument_type in TRADABLE_INSTRUMENT_TYPES:
+                floored_quantity = math.floor(quantity_to_route)
+                if floored_quantity < 1:
+                    reason = (
+                        f"Short-Order für {order.symbol} zu klein für ganzzahlige Short-Order "
+                        f"(abgerundet: {quantity_to_route:.6f} < 1 Aktie) - Order abgelehnt, keine "
+                        f"Broker-Anfrage gestellt."
+                    )
+                    results.append(
+                        ExecutedOrderResult(
+                            order=order, approved=False, reasons=[reason],
+                            volatility_scaling=scaling, conviction_scaling_factor=conviction_factor,
+                            market_phase_contradiction=contradiction,
+                        )
+                    )
+                    risk_check_log.append({"symbol": order.symbol, "approved": False, "reasons": [reason]})
+                    continue
+                quantity_to_route = float(floored_quantity)
+
             fill, source = _route_fill(
                 order_side,
                 order.symbol,
                 routing_instrument_type,
-                order.quantity if order.quantity is not None else order.notional / price,
+                quantity_to_route,
                 order.order_type,
                 order.limit_price,
                 price,

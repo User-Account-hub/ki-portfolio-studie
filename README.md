@@ -508,6 +508,29 @@ reports/                    Generierte Markdown-Reports (werden versioniert)
     Lauf ist der tatsächliche Performance-Gewinn vernachlässigbar - das
     Risiko einer Cash-/Positions-Divergenz überwiegt den Nutzen klar.
     Bleibt wie dokumentiert bestehen statt einer unsicheren Änderung.
+- **Fraktionierte SHORT-Orders werden vor dem Broker-Versand auf ganze
+  Stückzahlen abgerundet (2026-09-29, `v19`, individuelle Governance-
+  Ausnahme WÄHREND des Code-Freeze seit 24.09.):** Alpaca lehnt
+  fraktionierte Short-Verkäufe grundsätzlich ab
+  ("fractional orders cannot be sold short") - kein bewusstes
+  Guardrail-Veto, sondern ein rein technisches Ausführungs-Scheitern, das
+  SHORT-Positionen strukturell benachteiligt. Real zweimal aufgetreten:
+  21.09. (eine Order mitten in einer Multi-Order-Liste, siehe Fund #3/
+  `execute_proposed_orders`' Try/Except) und 29.09. (MSTR, Vol-/
+  Konviktions-Skalierung ergab zufällig keine ganze Zahl). `execution.
+  execute_proposed_orders` rundet die für eine reale (nicht simulierte)
+  SHORT-Order berechnete Stückzahl jetzt mit `math.floor()` ab - nie auf,
+  damit die Order nie über die bereits Guardrail-geprüfte Grösse
+  hinausgeht. Rundet das Ergebnis auf 0, wird die Order abgelehnt, OHNE
+  überhaupt beim Broker eingereicht zu werden, und im Report klar als
+  "zu klein für ganzzahlige Short-Order" gekennzeichnet statt (wie
+  vorher) einen unerwarteten API-Fehler zu erzeugen. Betrifft
+  ausschliesslich SHORT (nicht buy/sell/cover) und nur real bei Alpaca
+  geroutete Orders (nicht simulierte strukturierte Produkte, für die
+  diese Broker-Restriktion nicht gilt). Begründung für die Ausnahme vom
+  Freeze: strukturelles, zweimal real aufgetretenes technisches Problem;
+  reiner Ausführungs-Fix ohne jede Änderung an Claudes
+  Entscheidungslogik oder an den Kap.-6.8-Risk-Guardrails selbst.
 - **Defense in depth:** Der Prompt nennt Claude dieselben Limiten wie
   `config/risk_config.yaml`, aber `risk_guardrails.py` verlässt sich nie
   darauf, dass das Modell sie einhält - jede Order wird unabhängig

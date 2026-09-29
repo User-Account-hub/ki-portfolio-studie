@@ -1182,3 +1182,151 @@ def test_execute_proposed_orders_broker_error_does_not_lose_previously_fetched_r
     assert results[0].conviction_scaling_factor == pytest.approx(1.0)
     assert results[0].market_phase_contradiction is None
     assert results[0].trade_id is None
+
+
+# --- v19 (2026-09-29, Governance-Ausnahme während des Code-Freeze) -----------
+# Fraktionierte SHORT-Orders werden vor dem Broker-Versand auf ganze
+# Stückzahlen abgerundet, statt real (21.09., 29.09. MSTR) an Alpacas
+# "fractional orders cannot be sold short" zu scheitern. Siehe README für die
+# volle Begründung.
+
+
+class RecordingFillClient:
+    """Zeichnet die tatsächlich an den Broker gesendete `request.qty` auf und
+    füllt sie 1:1 (kein Slippage/Teilfüllung) - damit prüfbar ist, WELCHE
+    Stückzahl execution.py wirklich verschickt, nicht nur, dass irgendeine
+    verschickt wurde."""
+
+    def __init__(self, filled_avg_price: float):
+        self._filled_avg_price = filled_avg_price
+        self.submitted_requests: list = []
+
+    def submit_order(self, request):
+        self.submitted_requests.append(request)
+        return SimpleNamespace(
+            id="o1",
+            status=SimpleNamespace(value="filled"),
+            filled_qty=str(request.qty),
+            filled_avg_price=str(self._filled_avg_price),
+        )
+
+
+class MustNotBeCalledClient:
+    """Broker-Client, der bei JEDEM submit_order()-Aufruf fehlschlägt - für
+    Tests, die belegen sollen, dass eine Order den Broker gar nicht erst
+    erreicht (z.B. eine auf 0 abgerundete Short-Order)."""
+
+    def submit_order(self, request):
+        raise AssertionError(
+            f"Broker haette fuer diese Order gar nicht erst aufgerufen werden duerfen (request={request})."
+        )
+
+
+def test_execute_proposed_orders_floors_fractional_short_quantity_before_broker_submit():
+    """Regressionstest für den real eingetretenen Fehler (21.09., 29.09. MSTR):
+    eine fraktionierte SHORT-Stückzahl darf nie unverändert an Alpaca gehen.
+    Hier: quantity=13 mit "low"-Konviktion (0.8x) ergibt 10.4 - der Broker
+    muss 10 (abgerundet, nicht gerundet) erhalten, und die Order gilt als
+    normal ausgeführt (kein execution_error)."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.5)
+
+    order = ProposedOrder(
+        symbol="BBB", instrument_type="equity", side="short", quantity=13.0,
+        conviction="low", rationale="test",
+    )
+    broker_client = RecordingFillClient(filled_avg_price=50.0)
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"BBB": 50.0}, start_of_run_nav=1_000_000.0,
+        broker_client=broker_client,
+    )
+
+    assert broker_client.submitted_requests[0].qty == 10.0
+    assert results[0].approved is True
+    assert results[0].execution_error is False
+    assert results[0].trade_id is not None
+
+
+def test_execute_proposed_orders_floors_fractional_short_quantity_exact_mstr_scenario():
+    """Exaktes MSTR-Szenario vom 29.09.2026 (siehe Report): Vol-Skalierung
+    0.59x (Vol 104.8% vs. Ø 61.4%) kombiniert mit Konviktion "low" (0.80x) -
+    kombinierter Faktor 0.472. Bei einer Basis-Stückzahl von 100 ergibt das
+    47.2 - der Broker darf nur 47 erhalten."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.5)
+
+    order = ProposedOrder(
+        symbol="MSTR", instrument_type="equity", side="short", quantity=100.0,
+        conviction="low", rationale="test",
+    )
+    volatility_scaling = {
+        "MSTR": VolatilityScaling(
+            symbol="MSTR", annualized_volatility=1.048, universe_avg_volatility=0.614,
+            scaling_factor=0.59,
+        )
+    }
+    broker_client = RecordingFillClient(filled_avg_price=200.0)
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"MSTR": 200.0}, start_of_run_nav=1_000_000.0,
+        broker_client=broker_client, volatility_scaling=volatility_scaling,
+    )
+
+    assert broker_client.submitted_requests[0].qty == 47.0
+    assert results[0].approved is True
+    assert results[0].execution_error is False
+
+
+def test_execute_proposed_orders_rejects_short_order_too_small_to_floor_to_whole_share():
+    """Rundet die Stückzahl auf 0 ab (hier: 0.4 Aktien), wird die Order
+    abgelehnt, OHNE dass der Broker überhaupt kontaktiert wird - und OHNE
+    einen execution_error/API-Fehler zu erzeugen, wie es vor v19 der Fall
+    gewesen wäre."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config()
+
+    order = ProposedOrder(
+        symbol="BBB", instrument_type="equity", side="short", quantity=0.4, rationale="test",
+    )
+    broker_client = MustNotBeCalledClient()
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"BBB": 50.0}, start_of_run_nav=1_000_000.0,
+        broker_client=broker_client,
+    )
+
+    assert results[0].approved is False
+    assert results[0].execution_error is False
+    assert "zu klein für ganzzahlige Short-Order" in results[0].reasons[0]
+    assert results[0].trade_id is None
+
+
+def test_execute_proposed_orders_does_not_floor_fractional_buy_quantity():
+    """Kontrolltest: die v19-Abrundung gilt ausschliesslich für SHORT - eine
+    fraktionierte BUY-Order muss weiterhin unverändert (nicht abgerundet)
+    beim Broker landen, da Alpaca fraktionierte Long-Käufe problemlos
+    akzeptiert."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config()
+
+    order = ProposedOrder(
+        symbol="BBB", instrument_type="equity", side="buy", quantity=10.5, rationale="test",
+    )
+    broker_client = RecordingFillClient(filled_avg_price=50.0)
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"BBB": 50.0}, start_of_run_nav=1_000_000.0,
+        broker_client=broker_client,
+    )
+
+    assert broker_client.submitted_requests[0].qty == 10.5
+    assert results[0].approved is True
