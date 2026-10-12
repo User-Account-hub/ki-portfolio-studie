@@ -27,7 +27,14 @@ on:
     # compute_metrics' PHASE2_PERIODS_PER_YEAR) - beide Stellen (Cron hier und
     # PHASE2_START/`freqs` in src/metrics.py) muessen bei einer weiteren
     # Frequenzaenderung zusammen angepasst werden.
-    - cron: "0 15 * * 1-5"
+    #
+    # Seit 2026-10-12: Startzeit von 15:00 auf 14:53 UTC vorgezogen (krumme Minute
+    # statt voller Stunde). GitHub startet zeitgesteuerte Laeufe zur vollen Stunde
+    # gelegentlich verspaetet oder gar nicht (beobachtet: 06.10. verspaetet,
+    # 07.10. und 12.10. nicht gestartet). Reine Konfigurationsaenderung, keine
+    # Logikaenderung; 14:53 UTC liegt weiterhin in der Handelszeit (EDT 13:30-20:00,
+    # EST 14:30-21:00 UTC).
+    - cron: "53 14 * * 1-5"
   workflow_dispatch:
     inputs:
       force_rerun:
