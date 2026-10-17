@@ -333,7 +333,9 @@ def reduce_or_close_position(
     sign = 1 if row["side"] == "long" else -1
     realized_pnl_delta = sign * (fill_price - row["avg_entry_price"]) * delta_quantity
 
-    if remaining <= 1e-9:
+    # v23 (2026-10-17): Toleranz 1e-9 -> 1e-6 Stueck, damit nach einem auf den
+    # Broker-Bestand abgesenkten Verkauf kein Rundungsstaub als offene Position stehen bleibt.
+    if remaining <= 1e-6:
         conn.execute(
             """
             UPDATE positions

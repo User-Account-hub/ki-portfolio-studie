@@ -514,6 +514,26 @@ def execute_proposed_orders(
                     continue
                 quantity_to_route = float(floored_quantity)
 
+            # v23 (2026-10-17, siehe README-Governance-Log): Eine Order, die eine
+            # Position schliesst oder verkleinert (sell/cover), darf nie mehr
+            # Stuecke verlangen, als der Broker tatsaechlich haelt. Die in der
+            # DB gespeicherte Menge kann um Rundungsstaub (~1e-9 Stueck) ueber
+            # der Broker-Menge liegen (real: FLNC am 16.10.2026, 1144.37440048
+            # verlangt vs. 1144.374400475 vorhanden, "insufficient qty
+            # available"). Es wird deshalb NUR bei einer winzigen Abweichung
+            # (<= 1e-6 Stueck) auf die Broker-Menge abgesenkt; jede groessere
+            # Abweichung bleibt unveraendert und scheitert wie bisher sichtbar.
+            # Kann die Broker-Menge nicht ermittelt werden, bleibt die Menge
+            # unveraendert. Es wird nie aufgerundet und nie eine Menge erhoeht.
+            if order_side in (OrderSide.SELL, OrderSide.COVER) and routing_instrument_type in TRADABLE_INSTRUMENT_TYPES:
+                held_quantity = broker_alpaca.get_held_quantity(broker_client, order.symbol)
+                if held_quantity is not None and 0 < quantity_to_route - held_quantity <= 1e-6:
+                    log.info(
+                        "Order-Menge fuer %s auf Broker-Bestand abgesenkt (%r -> %r, Rundungsstaub, v23).",
+                        order.symbol, quantity_to_route, held_quantity,
+                    )
+                    quantity_to_route = held_quantity
+
             fill, source = _route_fill(
                 order_side,
                 order.symbol,

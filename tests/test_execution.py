@@ -1330,3 +1330,115 @@ def test_execute_proposed_orders_does_not_floor_fractional_buy_quantity():
 
     assert broker_client.submitted_requests[0].qty == 10.5
     assert results[0].approved is True
+
+
+# --- v23 (2026-10-17): Verkauf wird auf den Broker-Bestand begrenzt (Rundungsstaub) ---
+
+
+class HeldQtyClient(RecordingFillClient):
+    """RecordingFillClient mit get_open_position() - liefert die beim Broker
+    tatsaechlich gehaltene Menge (als String, wie Alpaca)."""
+
+    def __init__(self, filled_avg_price: float, held_qty):
+        super().__init__(filled_avg_price)
+        self._held_qty = held_qty
+
+    def get_open_position(self, symbol):
+        if self._held_qty is None:
+            raise RuntimeError("position does not exist")
+        return SimpleNamespace(qty=str(self._held_qty))
+
+
+def _open_long_position(conn, portfolio, symbol, quantity, price=50.0):
+    db.upsert_open_position(
+        conn, portfolio_id=portfolio["id"], symbol=symbol, instrument_type="equity",
+        underlying_symbol=None, side="long", delta_quantity=quantity, fill_price=price,
+        stop_loss_price=None,
+    )
+
+
+def test_sell_quantity_is_capped_to_broker_holding_on_rounding_dust():
+    """Exakter FLNC-Fall vom 16.10.2026: DB-Menge 1144.37440048, beim Broker
+    nur 1144.374400475. Der Verkauf muss auf den Broker-Bestand abgesenkt
+    werden, gilt als ausgefuehrt und laesst keine offene Staub-Position zurueck."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.5, max_position_size_pct_of_portfolio=0.5)
+    _open_long_position(conn, portfolio, "BBB", 1144.37440048)
+    order = ProposedOrder(symbol="BBB", instrument_type="equity", side="sell", quantity=1144.37440048, rationale="test")
+    broker_client = HeldQtyClient(filled_avg_price=50.0, held_qty="1144.374400475")
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"BBB": 50.0}, start_of_run_nav=1_000_000.0,
+        broker_client=broker_client,
+    )
+
+    assert broker_client.submitted_requests[0].qty == 1144.374400475
+    assert results[0].approved is True
+    assert results[0].execution_error is False
+    open_rows = [r for r in db.get_open_positions(conn, portfolio["id"]) if r["symbol"] == "BBB"]
+    assert open_rows == []
+
+
+def test_sell_quantity_unchanged_when_broker_holding_is_not_lower():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.5, max_position_size_pct_of_portfolio=0.5)
+    _open_long_position(conn, portfolio, "BBB", 100.0)
+    order = ProposedOrder(symbol="BBB", instrument_type="equity", side="sell", quantity=40.0, rationale="test")
+    broker_client = HeldQtyClient(filled_avg_price=50.0, held_qty="100")
+
+    execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"BBB": 50.0}, start_of_run_nav=1_000_000.0,
+        broker_client=broker_client,
+    )
+
+    assert broker_client.submitted_requests[0].qty == 40.0
+
+
+def test_sell_quantity_not_capped_on_large_discrepancy():
+    """Echte Abweichung (> 1e-6) wird NICHT stillschweigend korrigiert, sondern
+    geht unveraendert an den Broker und scheitert dort sichtbar."""
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.5, max_position_size_pct_of_portfolio=0.5)
+    _open_long_position(conn, portfolio, "BBB", 100.0)
+    order = ProposedOrder(symbol="BBB", instrument_type="equity", side="sell", quantity=100.0, rationale="test")
+    broker_client = HeldQtyClient(filled_avg_price=50.0, held_qty="90")
+
+    execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"BBB": 50.0}, start_of_run_nav=1_000_000.0,
+        broker_client=broker_client,
+    )
+
+    assert broker_client.submitted_requests[0].qty == 100.0
+
+
+def test_sell_quantity_unchanged_when_broker_position_lookup_fails():
+    conn = make_conn()
+    portfolio = make_portfolio(conn, initial_cash=1_000_000.0)
+    risk_config = make_risk_config(max_trade_notional_pct_of_nav=0.5, max_position_size_pct_of_portfolio=0.5)
+    _open_long_position(conn, portfolio, "BBB", 100.0)
+    order = ProposedOrder(symbol="BBB", instrument_type="equity", side="sell", quantity=100.0, rationale="test")
+    broker_client = HeldQtyClient(filled_avg_price=50.0, held_qty=None)
+
+    results = execution.execute_proposed_orders(
+        conn, portfolio, [order], model="test", prompt="p", raw_response="r",
+        risk_config=risk_config, current_prices={"BBB": 50.0}, start_of_run_nav=1_000_000.0,
+        broker_client=broker_client,
+    )
+
+    assert broker_client.submitted_requests[0].qty == 100.0
+    assert results[0].approved is True
+
+
+def test_get_held_quantity_returns_none_without_client():
+    assert broker_alpaca.get_held_quantity(None, "AAA") is None
+
+
+def test_get_held_quantity_returns_absolute_quantity_for_short():
+    client = SimpleNamespace(get_open_position=lambda s: SimpleNamespace(qty="-789"))
+    assert broker_alpaca.get_held_quantity(client, "AAA") == 789.0

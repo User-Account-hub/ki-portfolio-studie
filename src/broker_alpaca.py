@@ -192,6 +192,20 @@ def submit_equity_order(
     )
 
 
+def get_held_quantity(client, symbol: str) -> float | None:
+    """Liefert die beim Broker tatsaechlich gehaltene Stueckzahl (Betrag) fuer
+    `symbol`, oder None, falls sie nicht ermittelt werden kann (kein Client,
+    keine Position, API-Fehler). Best-effort und rein lesend: ein Fehler hier
+    darf nie einen Lauf abbrechen (v23, 2026-10-17)."""
+    if client is None:
+        return None
+    try:
+        position = client.get_open_position(symbol)
+        return abs(float(position.qty))
+    except Exception:
+        return None
+
+
 def simulate_structured_product_fill(quantity: float, reference_price: float) -> FillResult:
     """Books a structured-product order without routing it to a broker.
 
