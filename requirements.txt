@@ -9,7 +9,7 @@
 # NICHT gepinnt (kein vollstaendiges Lockfile/pip-tools) - das waere ein
 # separater, groesserer Schritt.
 anthropic==1.3.0
-yfinance==1.7.0
+yfinance==1.8.0
 alpaca-py==0.44.0
 pandas==3.0.5
 numpy==2.4.6
